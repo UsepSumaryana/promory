@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { openDb, audit } from './db.mjs';
 import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
-import { buildRecall } from './recall.mjs';
+import { buildRecall, buildBrief } from './recall.mjs';
 
 const PORT = Number(process.env.PM_PORT ?? 8787);
 const HOST = process.env.PM_HOST ?? '127.0.0.1';
@@ -296,7 +296,12 @@ const httpServer = createServer(async (req, res) => {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    const { empty, text: body } = buildRecall(db, { repo, branch, inheritFrom });
+    // mode=full hanya untuk diagnosa manual; hook selalu memakai indeks padat,
+    // karena stdout hook yang besar dipotong harness dan isinya hilang separuh.
+    const full = url.searchParams.get('mode') === 'full';
+    const { empty, text: body } = full
+      ? buildRecall(db, { repo, branch, inheritFrom })
+      : buildBrief(db, { repo, branch, inheritFrom });
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(empty) });
     res.end(body);
     return;

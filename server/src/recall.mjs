@@ -10,6 +10,64 @@
  * mengambil briefing sendiri lalu mencetaknya ke stdout tidak bergantung pada
  * keputusan model mana pun.
  */
+/**
+ * Indeks padat untuk SessionStart hook.
+ *
+ * Briefing lengkap tidak boleh dipakai di sini: hook stdout yang besar dipotong
+ * harness menjadi pratinjau beberapa KB pertama, dan sisanya dibuang ke file yang
+ * tidak dibaca model. Akibatnya recall tampak berhasil tapi separuh isinya hilang
+ * secara acak — pernah terjadi dengan briefing 18,9 KB.
+ *
+ * Jadi yang disuntikkan hanya judul, tipe, dan satu baris "kenapa penting" tiap
+ * entri. Itu cukup bagi model untuk tahu apa yang sudah diketahui tim, dan ia
+ * bisa menarik detail lengkapnya lewat `memory_recall` atau `memory_search`
+ * ketika memang dibutuhkan.
+ */
+export function buildBrief(db, { repo, branch, inheritFrom = [] }) {
+  const oneLine = (s, max = 90) => {
+    const flat = String(s ?? '').replace(/\s+/g, ' ').trim();
+    return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  };
+
+  const shared = db
+    .prepare("SELECT type,title,why,body,confidence FROM entries WHERE repo=? AND scope='shared' ORDER BY type, title")
+    .all(repo);
+  const branches = [branch, ...inheritFrom].filter(Boolean);
+  const ph = branches.map(() => '?').join(',');
+  const scoped = branches.length
+    ? db
+        .prepare(
+          `SELECT branch,type,title,why,body,confidence FROM entries WHERE repo=? AND scope='branch' AND branch IN (${ph}) ORDER BY branch, title`,
+        )
+        .all(repo, ...branches)
+    : [];
+  const adrs = db.prepare('SELECT number,status,title FROM adrs WHERE repo=? ORDER BY number').all(repo);
+  const lineage = db.prepare('SELECT * FROM lineage WHERE repo=? AND branch=?').get(repo, branch);
+
+  if (!shared.length && !scoped.length && !adrs.length) return { empty: true, text: '' };
+
+  const row = (e) =>
+    `- **${e.title}** _(${e.type}${e.confidence === 'likely' ? ', belum pasti' : ''}${e.branch && e.branch !== branch ? `, dari ${e.branch}` : ''})_ — ${oneLine(e.why || e.body)}`;
+
+  const out = [];
+  if (shared.length) out.push(`**Berlaku di semua branch (${shared.length})**\n${shared.map(row).join('\n')}`);
+  const own = scoped.filter((e) => e.branch === branch);
+  const inherited = scoped.filter((e) => e.branch !== branch);
+  if (own.length) out.push(`**Khusus branch ini (${own.length})**\n${own.map(row).join('\n')}`);
+  if (inherited.length) out.push(`**Diwarisi dari branch lain (${inherited.length})**\n${inherited.map(row).join('\n')}`);
+  if (adrs.length)
+    out.push(
+      `**Keputusan mengikat (${adrs.length} ADR)**\n` +
+        adrs.map((a) => `- ADR-${String(a.number).padStart(4, '0')} [${a.status}] ${a.title}`).join('\n'),
+    );
+  if (lineage)
+    out.push(
+      `**Lineage** — induk: ${lineage.parent_branch ?? '?'}, fork: ${(lineage.fork_point ?? '?').slice(0, 10)}${lineage.note ? ' (ada koreksi tercatat)' : ''}`,
+    );
+
+  return { empty: false, text: out.join('\n\n') };
+}
+
 export function buildRecall(db, { repo, branch, inheritFrom = [], includeAdr = true }) {
   const shared = db
     .prepare("SELECT * FROM entries WHERE repo=? AND scope='shared' ORDER BY type, title")

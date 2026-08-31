@@ -50,21 +50,21 @@ BRIEF="$(curl -sf --max-time 6 \
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
 case "$BRIEF" in *'<html'*|*'<!DOCTYPE'*|*'<HTML'*) exit 0 ;; esac
 
-cat <<EOF
-# Memory proyek (project-memory) — repo \`$REPO\`, branch \`$BRANCH\`
+# Batas ukuran. Stdout hook yang besar dipotong harness jadi pratinjau beberapa
+# KB pertama, sisanya dibuang ke file yang tidak dibaca model — recall tampak
+# berhasil padahal separuh isinya hilang (pernah terjadi pada 18,9 KB). Server
+# sudah mengirim indeks padat; ini jaring terakhir kalau memory tumbuh banyak.
+BRIEF="$(printf '%s' "$BRIEF" | head -c 6000)"
 
-Berikut isi memory tim untuk repo ini, sudah diambil otomatis. Pakai sebagai
-titik awal supaya tidak mengeksplorasi ulang hal yang sudah diketahui. Fakta di
-bawah adalah snapshot saat ditulis — verifikasi ulang apa pun yang menyebut
-path, fungsi, atau flag sebelum dipakai.
+cat <<EOF
+# Memory proyek — \`$REPO\` @ \`$BRANCH\`
+
+Indeks apa yang sudah diketahui tim tentang repo ini. Kalau sebuah judul
+menjawab pertanyaan pengguna, ambil isi lengkapnya dengan tool MCP
+\`memory_recall\` atau \`memory_search\` — jangan mengeksplorasi codebase dari
+nol untuk hal yang sudah tercatat di sini.
 
 $BRIEF
 
----
-Kalau di akhir tugas ada hal baru yang layak diingat tim — alur bispro,
-keputusan desain beserta alternatif yang ditolak, jebakan yang menghabiskan
-waktu, konvensi tim, cara menjalankan atau men-debug sesuatu, keputusan
-non-teknikal dari user — simpan dengan skill \`/project-memory:simpan-memory\`.
-Jangan menyimpan hal yang gampang di-grep dari kode, dan jangan pernah
-menyimpan kredensial: isinya permanen dan terbaca seluruh tim.
+Ada temuan baru di akhir tugas? Simpan dengan skill \`/project-memory:simpan-memory\`.
 EOF
