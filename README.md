@@ -20,7 +20,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 ## Instalasi untuk anggota tim
 
 ```bash
-/plugin marketplace add https://git.neuron.id/reusable/claude-plugin-project-memory.git
+/plugin marketplace add https://github.com/UsepSumaryana/promory.git
 ```
 
 ```bash
@@ -30,7 +30,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 Lalu set dua environment variable dan restart sesi Claude Code:
 
 ```bash
-export PM_MEMORY_URL=https://memory.neuron.id/mcp
+export PM_MEMORY_URL=https://memory.example.com/mcp
 export PM_MEMORY_TOKEN=<token-pribadi-dari-admin>
 ```
 
@@ -97,7 +97,7 @@ Agent melapor bahwa memory tidak tersedia lalu melanjutkan tanpanya. Sesi tidak 
 
 ## Sebelum dipublikasikan
 
-Sesuaikan URL repo di `plugin/.claude-plugin/plugin.json`, domain di `server/deploy/nginx.conf.example`, dan default `PM_MEMORY_URL` di `plugin/.mcp.json` bila berbeda.
+URL repo sudah menunjuk ke https://github.com/UsepSumaryana/promory. Yang masih placeholder hanya **domain server memory** — ganti `memory.example.com` di `server/deploy/nginx.conf.example` dan default `PM_MEMORY_URL` di `plugin/.mcp.json` dengan domain VPS Anda.
 
 ## Merilis perubahan
 

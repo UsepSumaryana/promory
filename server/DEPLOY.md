@@ -13,7 +13,7 @@ sudo chown -R project-memory:project-memory /opt/project-memory /var/lib/project
 ## 2. Pasang kode
 
 ```bash
-sudo -u project-memory git clone <url-repo-plugin> /opt/project-memory
+sudo -u project-memory git clone https://github.com/UsepSumaryana/promory.git /opt/project-memory
 cd /opt/project-memory/server && sudo -u project-memory npm ci --omit=dev
 ```
 
@@ -61,7 +61,7 @@ sudo -u project-memory node src/admin.mjs list
 ## 6. TLS di depannya
 
 ```bash
-sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/project-memory && sudo certbot --nginx -d memory.neuron.id
+sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/project-memory && sudo certbot --nginx -d memory.example.com
 ```
 
 Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permintaan, jadi tanpa TLS token itu terbaca siapa pun di jalur jaringan. Jangan mengubah `PM_HOST` ke `0.0.0.0`.
@@ -69,7 +69,7 @@ Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permi
 ## 7. Setiap anggota tim
 
 ```bash
-/plugin marketplace add <url-repo-plugin>
+/plugin marketplace add https://github.com/UsepSumaryana/promory.git
 ```
 
 ```bash
@@ -79,7 +79,7 @@ Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permi
 Lalu set dua environment variable di mesin masing-masing, dan restart sesi Claude Code:
 
 ```bash
-export PM_MEMORY_URL=https://memory.neuron.id/mcp
+export PM_MEMORY_URL=https://memory.example.com/mcp
 export PM_MEMORY_TOKEN=<token-pribadi>
 ```
 
