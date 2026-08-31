@@ -5,23 +5,56 @@ set -u
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "NOT_A_GIT_REPO"; exit 0; }
 
-slug() { echo "$1" | sed -e 's#^.*[:/]\([^/]*/[^/]*\)$#\1#' -e 's#\.git$##' -e 's#[^A-Za-z0-9._-]#-#g'; }
+# Slug repo diturunkan dari URL remote, BUKAN dari nama direktori — dua orang
+# yang meng-clone repo yang sama ke folder berbeda harus mendapat slug yang sama,
+# atau memory mereka tidak akan pernah bertemu.
+#
+# Normalisasi menutup empat cara URL yang sama bisa tertulis berbeda: skema
+# (https/ssh/scp), `user@`, nomor port, garis miring atau `.git` di ujung, dan
+# beda huruf besar-kecil. Path lengkap setelah host dipertahankan, supaya dua
+# repo bernama sama di subgrup berbeda tidak saling menimpa.
+slug() {
+  echo "$1" \
+    | tr 'A-Z' 'a-z' \
+    | sed -e 's#^[a-z][a-z0-9+.-]*://##' \
+          -e 's#^[^@/]*@##' \
+          -e 's#^\([^/:]*\):[0-9][0-9]*/#\1/#' \
+          -e 's#^\([^/:]*\):#\1/#' \
+          -e 's#/*$##' \
+          -e 's#\.git$##' \
+          -e 's#^[^/]*/##' \
+          -e 's#[^a-z0-9._/-]#-#g' \
+          -e 's#/#-#g'
+}
 
-ORIGIN="$(git remote get-url origin 2>/dev/null)"
-if [ -n "$ORIGIN" ]; then REPO="$(slug "$ORIGIN")"; else REPO="$(basename "$ROOT" | sed 's#[^A-Za-z0-9._-]#-#g')"; fi
+# origin lebih dulu, lalu upstream, lalu remote apa pun yang ada.
+REMOTE_URL=""; REMOTE_NAME=""
+for r in origin upstream $(git remote 2>/dev/null); do
+  u="$(git remote get-url "$r" 2>/dev/null)" || continue
+  [ -n "$u" ] && { REMOTE_URL="$u"; REMOTE_NAME="$r"; break; }
+done
+
+if [ -n "$REMOTE_URL" ]; then
+  REPO="$(slug "$REMOTE_URL")"
+  SLUG_SOURCE="remote:$REMOTE_NAME"
+else
+  # Tanpa remote, satu-satunya nama yang tersisa adalah nama folder — dan itu
+  # berbeda antar orang. Ditandai eksplisit supaya agent bisa memperingatkan
+  # bahwa memory ini tidak akan menyatu dengan milik rekan.
+  REPO="$(basename "$ROOT" | tr 'A-Z' 'a-z' | sed 's#[^a-z0-9._-]#-#g')"
+  SLUG_SOURCE="fallback-nama-direktori"
+fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 BSLUG="$(echo "$BRANCH" | sed 's#[^A-Za-z0-9._-]#-#g')"
-STORE="$HOME/.claude/project-memory/$REPO"
 
 echo "repo_slug: $REPO"
+echo "repo_slug_source: $SLUG_SOURCE"
+[ -n "$REMOTE_URL" ] && echo "remote_url: $REMOTE_URL"
+[ "$SLUG_SOURCE" = "fallback-nama-direktori" ] && echo "PERINGATAN: repo tanpa remote — slug diambil dari nama folder, jadi memory tidak akan menyatu dengan rekan yang memakai nama folder berbeda."
 echo "worktree: $ROOT"
 echo "branch: $BRANCH"
 echo "branch_slug: $BSLUG"
-echo "store_dir: $STORE"
-echo "shared_file: $STORE/_shared.md"
-echo "branch_file: $STORE/branches/$BSLUG.md"
-echo "lineage_file: $STORE/branches/$BSLUG.lineage.json"
 
 # --- parent branch: branch lain yang paling baru divergen dari HEAD ---
 BEST=""; BESTN=""
@@ -58,9 +91,3 @@ git log --merges --first-parent -30 --format='  - %h %s (%ad)' --date=short HEAD
 echo "head: $(git log -1 --format='%h %s' 2>/dev/null)"
 echo "dirty_files: $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 
-echo "existing_memory:"
-if [ -d "$STORE" ]; then
-  find "$STORE" -name '*.md' -printf '  - %P (%s bytes)\n' 2>/dev/null | sort || echo "  (none)"
-else
-  echo "  (store belum ada)"
-fi

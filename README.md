@@ -47,6 +47,12 @@ Token bersifat pribadi — jangan di-commit, jangan dibagikan. Nama yang dipetak
 
 Hook dipakai karena plugin tidak bisa menulis ke `CLAUDE.md` pengguna. Hook diam total di direktori yang bukan repo git.
 
+## Identitas repo lintas anggota
+
+Slug repo diturunkan dari **URL remote**, bukan nama direktori, jadi dua orang yang meng-clone repo yang sama ke folder berbeda tetap menulis ke ruang memory yang sama. Normalisasi menutup semua cara URL yang sama bisa tertulis berbeda — skema `https`/`ssh`/`scp`, `user@`, nomor port, `/` atau `.git` di ujung, dan beda huruf besar-kecil — sementara path lengkap setelah host dipertahankan supaya dua repo bernama sama di subgrup berbeda tidak saling menimpa.
+
+Satu kasus yang tidak bisa ditangani: repo **tanpa remote sama sekali**. Di situ satu-satunya nama yang tersisa adalah nama folder, dan itu memang berbeda antar orang. Script menandainya lewat `repo_slug_source: fallback-nama-direktori` dan agent diinstruksikan memperingatkan bahwa memory tersebut tidak akan menyatu dengan rekan.
+
 ## GUI admin
 
 Ada di `/ui` pada server yang sama, hanya untuk token ber-peran admin. Fungsinya: menjelajah dan mencari memory per repo, menyunting dan menghapus entri yang salah, melihat ADR dan lineage, membaca audit, serta mengelola anggota (buat token, rotasi, nonaktifkan, ubah peran).

@@ -24,11 +24,13 @@ Memory disimpan di **server MCP bersama**, dibaca dan ditulis seluruh tim. Kamu 
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/pm-context.sh"
 ```
 
-Output memberi: `repo_slug`, `branch`, `parent_branch` (tebakan heuristik), `contained_by`, `merged_in`, `head`, `dirty_files`.
+Output memberi: `repo_slug`, `repo_slug_source`, `branch`, `parent_branch` (tebakan heuristik), `contained_by`, `merged_in`, `head`, `dirty_files`.
 
 Kalau outputnya `NOT_A_GIT_REPO`, laporkan itu dan berhenti — tanpa branch, tidak ada yang bisa di-scope.
 
-`repo_slug` dan `branch` dari script inilah yang dipakai sebagai argumen `repo` dan `branch` di semua tool MCP. Jangan mengarang nilainya sendiri, atau memory-mu mendarat di ruang nama yang salah dan tidak pernah ditemukan orang lain.
+`repo_slug` dan `branch` dari script inilah yang dipakai sebagai argumen `repo` dan `branch` di semua tool MCP. **Jangan pernah mengarang atau menyesuaikan nilainya** — slug diturunkan dari URL remote dan sudah dinormalisasi supaya semua anggota tim mendapat nilai yang sama berapa pun nama folder mereka. Mengubahnya berarti memory-mu mendarat di ruang nama yang berbeda dari rekan dan tidak akan pernah saling bertemu.
+
+Kalau `repo_slug_source` bernilai `fallback-nama-direktori`, repo itu tidak punya remote sama sekali dan slug-nya diambil dari nama folder. Tetap lanjutkan, tapi **sebutkan di balasanmu** bahwa memory untuk repo ini tidak akan menyatu dengan rekan yang memakai nama folder berbeda, dan menambahkan remote akan memperbaikinya.
 
 ## Kalau server tidak bisa dihubungi
 
