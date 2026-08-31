@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "memory": {
+      "type": "http",
+      "url": "${PM_MEMORY_URL:-https://memory.neuron.id/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${PM_MEMORY_TOKEN}"
+      }
+    }
+  }
+}

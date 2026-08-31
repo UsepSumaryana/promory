@@ -1,0 +1,36 @@
+# TLS wajib: token bearer dikirim di setiap permintaan, dan lewat HTTP polos
+# token itu terbaca siapa pun di jalur jaringan. Sertifikat lewat certbot.
+
+server {
+    listen 80;
+    server_name memory.neuron.id;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name memory.neuron.id;
+
+    ssl_certificate     /etc/letsencrypt/live/memory.neuron.id/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/memory.neuron.id/privkey.pem;
+
+    location /mcp {
+        proxy_pass http://127.0.0.1:8787/;
+        proxy_http_version 1.1;
+
+        # Transport MCP boleh menjawab sebagai SSE. Tanpa mematikan buffering,
+        # jawaban streaming tertahan di nginx dan klien tampak menggantung.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Authorization $http_authorization;
+    }
+
+    location /health {
+        proxy_pass http://127.0.0.1:8787/health;
+    }
+}

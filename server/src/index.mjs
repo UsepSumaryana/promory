@@ -1,0 +1,350 @@
+import { createServer } from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
+import { z } from 'zod';
+import { openDb, audit } from './db.mjs';
+
+const PORT = Number(process.env.PM_PORT ?? 8787);
+const HOST = process.env.PM_HOST ?? '127.0.0.1';
+const DB_PATH = process.env.PM_DB ?? './data/memory.db';
+
+/**
+ * Token dipetakan ke nama penulis: PM_TOKENS="usep:tok_a,rafi:tok_b".
+ * Nama itulah yang tercatat sebagai author, sehingga setiap fakta di store
+ * bersama bisa ditelusuri asalnya.
+ */
+function loadTokens() {
+  const raw = (process.env.PM_TOKENS ?? '').trim();
+  if (!raw) {
+    console.error('PM_TOKENS kosong — server menolak semua permintaan. Set PM_TOKENS="nama:token,..."');
+    return new Map();
+  }
+  const map = new Map();
+  for (const pair of raw.split(',')) {
+    const idx = pair.indexOf(':');
+    if (idx < 1) continue;
+    const name = pair.slice(0, idx).trim();
+    const token = pair.slice(idx + 1).trim();
+    if (name && token) map.set(token, name);
+  }
+  return map;
+}
+
+const TOKENS = loadTokens();
+const db = openDb(DB_PATH);
+const als = new AsyncLocalStorage();
+const author = () => als.getStore()?.author ?? 'unknown';
+const now = () => new Date().toISOString();
+const text = (s) => ({ content: [{ type: 'text', text: s }] });
+
+/**
+ * Memory bersama tersimpan permanen dan terbaca seluruh tim, jadi kredensial
+ * yang lolos ke sini tidak bisa "dihapus begitu saja" dari ingatan orang.
+ * Penjaga ini menolak di titik tulis, bukan membersihkan diam-diam — agent
+ * harus tahu tulisannya ditolak supaya bisa menulis ulang tanpa rahasianya.
+ */
+const SECRET_PATTERNS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\b(password|passwd|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*\S{6,}/i,
+  /\b(gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/,
+  /\b[a-z]+:\/\/[^\s:@/]+:[^\s@/]{4,}@/, // connection string dengan kata sandi inline
+];
+
+function assertNoSecret(...parts) {
+  const blob = parts.filter(Boolean).join('\n');
+  for (const re of SECRET_PATTERNS) {
+    if (re.test(blob)) {
+      throw new Error(
+        'Ditolak: teks mengandung sesuatu yang menyerupai kredensial. ' +
+          'Tulis ulang dengan menyebut nama variabel atau lokasinya saja, bukan nilainya.',
+      );
+    }
+  }
+}
+
+function buildServer() {
+  const server = new McpServer({ name: 'project-memory', version: '1.0.0' });
+
+  server.registerTool(
+    'memory_recall',
+    {
+      description:
+        'Ambil memory untuk sebuah repo dan branch, termasuk memory bersama, memory branch induk yang diwarisi, dan ADR yang berstatus accepted. Panggil ini di awal tugas sebelum mengeksplorasi codebase.',
+      inputSchema: z.object({
+        repo: z.string().describe('Slug repo, dari pm-context.sh (repo_slug)'),
+        branch: z.string().describe('Nama branch yang sedang dikerjakan'),
+        inherit_from: z
+          .array(z.string())
+          .optional()
+          .describe('Branch induk dan branch yang di-merge masuk, memory-nya ikut diwarisi'),
+        include_adr: z.boolean().optional().describe('Sertakan ADR (default true)'),
+      }),
+    },
+    async ({ repo, branch, inherit_from = [], include_adr = true }) => {
+      const shared = db
+        .prepare('SELECT * FROM entries WHERE repo=? AND scope=\'shared\' ORDER BY type, title')
+        .all(repo);
+      const branches = [branch, ...inherit_from];
+      const placeholders = branches.map(() => '?').join(',');
+      const scoped = db
+        .prepare(
+          `SELECT * FROM entries WHERE repo=? AND scope='branch' AND branch IN (${placeholders}) ORDER BY branch, title`,
+        )
+        .all(repo, ...branches);
+      const adrs = include_adr
+        ? db.prepare('SELECT * FROM adrs WHERE repo=? ORDER BY number').all(repo)
+        : [];
+      const lineage = db.prepare('SELECT * FROM lineage WHERE repo=? AND branch=?').get(repo, branch);
+
+      if (!shared.length && !scoped.length && !adrs.length) {
+        return text(
+          `Belum ada memory untuk repo '${repo}'. Jangan mengarang — eksplorasi seperti biasa, lalu simpan temuannya lewat memory_write di akhir tugas.`,
+        );
+      }
+
+      const fmt = (e) =>
+        `### ${e.title}\n[type: ${e.type} | confidence: ${e.confidence} | oleh: ${e.author} | diperbarui: ${e.updated_at.slice(0, 10)}${e.branch ? ` | branch: ${e.branch}` : ''}]\n${e.body}${e.why ? `\nKenapa penting: ${e.why}` : ''}`;
+
+      const out = [];
+      if (shared.length) out.push(`## Memory bersama (${shared.length})\n\n${shared.map(fmt).join('\n\n')}`);
+      const own = scoped.filter((e) => e.branch === branch);
+      const inherited = scoped.filter((e) => e.branch !== branch);
+      if (own.length) out.push(`## Branch '${branch}' (${own.length})\n\n${own.map(fmt).join('\n\n')}`);
+      if (inherited.length)
+        out.push(
+          `## Diwarisi dari branch lain (${inherited.length}) — kalah bila bertentangan dengan memory branch saat ini\n\n${inherited.map(fmt).join('\n\n')}`,
+        );
+      if (adrs.length)
+        out.push(
+          `## ADR (${adrs.length})\n\n` +
+            adrs
+              .map(
+                (a) =>
+                  `### ADR-${String(a.number).padStart(4, '0')} — ${a.title}\n[status: ${a.status} | oleh: ${a.author}]\nKonteks: ${a.context}\nKeputusan: ${a.decision}${a.alternatives ? `\nAlternatif ditolak: ${a.alternatives}` : ''}${a.consequences ? `\nKonsekuensi: ${a.consequences}` : ''}`,
+              )
+              .join('\n\n'),
+        );
+      if (lineage)
+        out.push(
+          `## Lineage tercatat\ninduk: ${lineage.parent_branch ?? '?'} | fork: ${lineage.fork_point ?? '?'}\nmerge masuk: ${lineage.merged_in ?? '-'}\nsudah termuat di: ${lineage.contained_by ?? '-'}${lineage.note ? `\ncatatan: ${lineage.note}` : ''}`,
+        );
+
+      out.push(
+        'Fakta di atas adalah snapshot saat ditulis. Verifikasi ulang apa pun yang menyebut path, fungsi, atau flag sebelum dipakai.',
+      );
+      return text(out.join('\n\n---\n\n'));
+    },
+  );
+
+  server.registerTool(
+    'memory_write',
+    {
+      description:
+        'Simpan satu temuan. Judul yang sama pada repo+scope+branch yang sama akan MEMPERBARUI entri lama, bukan menambah duplikat. Jangan simpan hal yang gampang di-grep dari kode, dan jangan pernah menyimpan kredensial.',
+      inputSchema: z.object({
+        repo: z.string(),
+        scope: z.enum(['shared', 'branch']).describe("'shared' bila benar di semua branch"),
+        branch: z.string().optional().describe("Wajib bila scope='branch'"),
+        type: z.enum(['architecture', 'bispro', 'convention', 'gotcha', 'decision', 'env', 'process', 'people', 'reference']),
+        title: z.string().describe('Judul ringkas — ini kunci dedup, buat deskriptif dan stabil'),
+        body: z.string().describe('Fakta, 1-4 kalimat, sebut path file konkret'),
+        why: z.string().optional().describe('Kenapa penting: apa yang jadi lebih cepat atau lebih aman'),
+        confidence: z.enum(['confirmed', 'likely']).optional(),
+      }),
+    },
+    async ({ repo, scope, branch, type, title, body, why, confidence = 'confirmed' }) => {
+      if (scope === 'branch' && !branch) throw new Error("scope='branch' membutuhkan argumen branch.");
+      assertNoSecret(title, body, why);
+      const b = scope === 'branch' ? branch : null;
+      const existing = db
+        .prepare("SELECT id FROM entries WHERE repo=? AND scope=? AND IFNULL(branch,'')=IFNULL(?,'') AND title=?")
+        .get(repo, scope, b, title);
+      if (existing) {
+        db.prepare('UPDATE entries SET type=?, body=?, why=?, confidence=?, author=?, updated_at=? WHERE id=?')
+          .run(type, body, why ?? null, confidence, author(), now(), existing.id);
+        audit(db, author(), 'update-entry', repo, title);
+        return text(`Diperbarui entri lama #${existing.id}: "${title}".`);
+      }
+      const info = db
+        .prepare(
+          'INSERT INTO entries (repo,scope,branch,type,title,body,why,confidence,author,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        )
+        .run(repo, scope, b, type, title, body, why ?? null, confidence, author(), now(), now());
+      audit(db, author(), 'create-entry', repo, title);
+      return text(`Tersimpan sebagai #${info.lastInsertRowid}: "${title}" (${scope}${b ? `/${b}` : ''}).`);
+    },
+  );
+
+  server.registerTool(
+    'memory_search',
+    {
+      description: 'Cari entri memory pada sebuah repo berdasarkan kata kunci di judul atau isi.',
+      inputSchema: z.object({ repo: z.string(), query: z.string(), limit: z.number().optional() }),
+    },
+    async ({ repo, query, limit = 20 }) => {
+      const like = `%${query}%`;
+      const rows = db
+        .prepare(
+          'SELECT id,scope,branch,type,title,confidence,author FROM entries WHERE repo=? AND (title LIKE ? OR body LIKE ?) ORDER BY updated_at DESC LIMIT ?',
+        )
+        .all(repo, like, like, limit);
+      if (!rows.length) return text(`Tidak ada entri yang cocok dengan '${query}'.`);
+      return text(
+        rows
+          .map((r) => `#${r.id} [${r.scope}${r.branch ? `/${r.branch}` : ''} | ${r.type} | ${r.confidence} | ${r.author}] ${r.title}`)
+          .join('\n'),
+      );
+    },
+  );
+
+  server.registerTool(
+    'memory_delete',
+    {
+      description:
+        'Hapus entri yang ternyata salah. Pakai ini alih-alih membiarkan dua fakta bertentangan hidup berdampingan.',
+      inputSchema: z.object({ id: z.number(), reason: z.string().describe('Kenapa dihapus — tercatat di audit') }),
+    },
+    async ({ id, reason }) => {
+      const row = db.prepare('SELECT repo,title FROM entries WHERE id=?').get(id);
+      if (!row) return text(`Entri #${id} tidak ditemukan.`);
+      db.prepare('DELETE FROM entries WHERE id=?').run(id);
+      audit(db, author(), 'delete-entry', row.repo, `${row.title} — ${reason}`);
+      return text(`Entri #${id} ("${row.title}") dihapus. Alasan tercatat di audit.`);
+    },
+  );
+
+  server.registerTool(
+    'adr_write',
+    {
+      description:
+        'Catat keputusan arsitektur yang mengikat dan belum terdokumentasi di repo. Hanya untuk keputusan yang punya pilihan nyata antar opsi, mengikat pekerjaan berikutnya, dan mahal dibalik. Nomor diberikan otomatis.',
+      inputSchema: z.object({
+        repo: z.string(),
+        title: z.string(),
+        context: z.string().describe('Situasi dan tekanan yang memaksa memilih'),
+        decision: z.string().describe('Apa yang dipilih, sebut komponen atau path konkret'),
+        alternatives: z.string().optional().describe('Opsi yang ditolak dan kenapa'),
+        consequences: z.string().optional().describe('Yang jadi lebih mudah, dan yang harus dibayar'),
+        status: z.enum(['proposed', 'accepted', 'deprecated']).optional(),
+        scope: z.enum(['architecture', 'bispro', 'process', 'tooling']).optional(),
+        branch: z.string().optional().describe('Branch asal keputusan'),
+        supersedes: z.number().optional().describe('Nomor ADR yang digantikan — ADR lama TIDAK dihapus'),
+      }),
+    },
+    async ({ repo, title, context, decision, alternatives, consequences, status = 'accepted', scope, branch, supersedes }) => {
+      assertNoSecret(title, context, decision, alternatives, consequences);
+      const max = db.prepare('SELECT MAX(number) AS n FROM adrs WHERE repo=?').get(repo);
+      const number = (max?.n ?? 0) + 1;
+      const info = db
+        .prepare(
+          'INSERT INTO adrs (repo,number,title,status,scope,branch,context,decision,alternatives,consequences,supersedes,author,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        )
+        .run(repo, number, title, status, scope ?? null, branch ?? null, context, decision, alternatives ?? null, consequences ?? null, supersedes ?? null, author(), now(), now());
+      let note = '';
+      if (supersedes) {
+        const old = db.prepare('SELECT id FROM adrs WHERE repo=? AND number=?').get(repo, supersedes);
+        if (old) {
+          db.prepare("UPDATE adrs SET status=?, superseded_by=?, updated_at=? WHERE id=?")
+            .run(`superseded-by:ADR-${String(number).padStart(4, '0')}`, number, now(), old.id);
+          note = ` ADR-${String(supersedes).padStart(4, '0')} ditandai superseded, tidak dihapus.`;
+        } else {
+          note = ` Peringatan: ADR-${supersedes} tidak ditemukan, relasi supersede tidak dipasang.`;
+        }
+      }
+      audit(db, author(), 'create-adr', repo, `ADR-${number} ${title}`);
+      return text(`Tersimpan ADR-${String(number).padStart(4, '0')} (#${info.lastInsertRowid}).${note}`);
+    },
+  );
+
+  server.registerTool(
+    'adr_list',
+    {
+      description: 'Daftar ADR sebuah repo, opsional disaring berdasarkan status.',
+      inputSchema: z.object({ repo: z.string(), status: z.string().optional() }),
+    },
+    async ({ repo, status }) => {
+      const rows = status
+        ? db.prepare('SELECT * FROM adrs WHERE repo=? AND status LIKE ? ORDER BY number').all(repo, `${status}%`)
+        : db.prepare('SELECT * FROM adrs WHERE repo=? ORDER BY number').all(repo);
+      if (!rows.length) return text('Belum ada ADR untuk repo ini.');
+      return text(
+        rows
+          .map((a) => `ADR-${String(a.number).padStart(4, '0')} [${a.status}] ${a.title} — ${a.decision.slice(0, 120)}`)
+          .join('\n'),
+      );
+    },
+  );
+
+  server.registerTool(
+    'lineage_put',
+    {
+      description:
+        'Simpan lineage branch hasil pm-context.sh setelah dikoreksi. Menimpa catatan lineage sebelumnya untuk branch itu.',
+      inputSchema: z.object({
+        repo: z.string(),
+        branch: z.string(),
+        parent_branch: z.string().optional(),
+        fork_point: z.string().optional(),
+        merged_in: z.array(z.string()).optional(),
+        contained_by: z.array(z.string()).optional(),
+        note: z.string().optional().describe('Alasan koreksi bila tebakan script diubah'),
+      }),
+    },
+    async ({ repo, branch, parent_branch, fork_point, merged_in, contained_by, note }) => {
+      db.prepare(
+        `INSERT INTO lineage (repo,branch,parent_branch,fork_point,merged_in,contained_by,note,author,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(repo,branch) DO UPDATE SET
+           parent_branch=excluded.parent_branch, fork_point=excluded.fork_point,
+           merged_in=excluded.merged_in, contained_by=excluded.contained_by,
+           note=excluded.note, author=excluded.author, updated_at=excluded.updated_at`,
+      ).run(repo, branch, parent_branch ?? null, fork_point ?? null, (merged_in ?? []).join('; ') || null, (contained_by ?? []).join('; ') || null, note ?? null, author(), now());
+      audit(db, author(), 'put-lineage', repo, branch);
+      return text(`Lineage '${branch}' tersimpan (induk: ${parent_branch ?? '?'}).`);
+    },
+  );
+
+  return server;
+}
+
+const handler = createMcpHandler(() => buildServer(), {
+  onerror: (err) => console.error('[mcp]', err?.message ?? err),
+});
+const mcpNode = toNodeHandler(handler);
+
+const httpServer = createServer(async (req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, entries: db.prepare('SELECT COUNT(*) AS n FROM entries').get().n }));
+    return;
+  }
+
+  const auth = req.headers.authorization ?? '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const who = TOKENS.get(token);
+  if (!who) {
+    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
+    res.end(JSON.stringify({ error: 'token tidak dikenal' }));
+    return;
+  }
+
+  // Nama penulis dibawa lewat AsyncLocalStorage agar setiap tool handler bisa
+  // mencatat author tanpa harus meneruskannya sebagai argumen tool — argumen
+  // tool diisi model, dan identitas tidak boleh berasal dari sana.
+  als.run({ author: who }, () => mcpNode(req, res));
+});
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`project-memory MCP mendengarkan di http://${HOST}:${PORT}  db=${DB_PATH}  pengguna=${TOKENS.size}`);
+});
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    httpServer.close();
+    handler.close().finally(() => {
+      db.close();
+      process.exit(0);
+    });
+  });
+}

@@ -1,0 +1,28 @@
+[Unit]
+Description=project-memory MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=project-memory
+Group=project-memory
+WorkingDirectory=/opt/project-memory/server
+EnvironmentFile=/opt/project-memory/server/.env
+ExecStart=/usr/bin/node src/index.mjs
+Restart=always
+RestartSec=3
+
+# Token ada di EnvironmentFile, jadi proses ini dikurung seketat mungkin.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/project-memory
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,15 +1,23 @@
 # project-memory — plugin Claude Code internal Neuron
 
-Memory proyek lintas-sesi **per branch**, disimpan di luar codebase. Tujuannya memangkas waktu yang habis untuk membaca ulang codebase dan menemukan ulang bisnis proses di setiap sesi baru.
+Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar codebase. Tujuannya memangkas waktu yang habis untuk membaca ulang codebase dan menemukan ulang bisnis proses di setiap sesi baru, dan membuat temuan satu orang langsung terpakai oleh yang lain.
 
 ## Yang dilakukan
 
-- **RECALL** di awal tugas: agent membaca memory repo + branch, lalu memberi briefing padat (arsitektur, bispro, konvensi, jebakan, ADR yang mengikat) sebelum eksplorasi codebase dimulai.
-- **CAPTURE** di akhir tugas: temuan baru disaring dan disimpan. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
+- **RECALL** di awal tugas: agent membaca memory repo + branch dari server, lalu memberi briefing padat (arsitektur, bispro, konvensi, jebakan, ADR yang mengikat) sebelum eksplorasi codebase dimulai.
+- **CAPTURE** di akhir tugas: temuan baru disaring dan dikirim ke server. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
 - **Sadar lineage branch**: mendeteksi branch induk, fork point, branch yang di-merge masuk, dan branch yang sudah memuat branch ini. Memory branch induk ikut terwarisi saat recall.
-- **ADR**: keputusan arsitektur yang belum terdokumentasi dicatat dengan alternatif yang ditolak dan konsekuensinya, memakai relasi supersede alih-alih menghapus.
+- **ADR**: keputusan arsitektur yang belum terdokumentasi dicatat dengan alternatif yang ditolak dan konsekuensinya. Penomoran otomatis, dan keputusan yang dibatalkan ditandai superseded — tidak pernah dihapus.
+- **Atribusi dan audit**: tiap entri membawa nama penulisnya, dan setiap tulis/hapus tercatat di tabel audit.
 
-## Instalasi
+## Dua bagian
+
+| Bagian | Di mana | Fungsi |
+|---|---|---|
+| `server/` | VPS tim | MCP server + SQLite. Lihat [DEPLOY.md](server/DEPLOY.md) |
+| `plugin/` | Mesin tiap anggota | Agent, script lineage, hook, dan konfigurasi MCP |
+
+## Instalasi untuk anggota tim
 
 ```bash
 /plugin marketplace add https://git.neuron.id/reusable/claude-plugin-project-memory.git
@@ -19,21 +27,14 @@ Memory proyek lintas-sesi **per branch**, disimpan di luar codebase. Tujuannya m
 /plugin install project-memory@neuron
 ```
 
-Setelah itu restart sesi Claude Code. Agent baru terbaca saat sesi dimulai.
+Lalu set dua environment variable dan restart sesi Claude Code:
 
-## Di mana memory disimpan
-
-```
-~/.claude/project-memory/<repo-slug>/
-  _shared.md                        # benar di semua branch
-  _decisions.md                     # ADR yang belum terdokumentasi di repo
-  branches/<branch>.md              # khusus satu branch
-  branches/<branch>.lineage.json    # induk, fork point, merge masuk
+```bash
+export PM_MEMORY_URL=https://memory.neuron.id/mcp
+export PM_MEMORY_TOKEN=<token-pribadi-dari-admin>
 ```
 
-**Memory bersifat lokal per orang dan tidak dibagikan.** Tiap anggota membangun store-nya sendiri. Tidak ada satu byte pun yang ditulis ke repo produk, dan tidak ada yang dikirim ke luar mesin. Temuan yang sudah matang dan layak dibagi sebaiknya dipromosikan lewat jalur dokumentasi repo (mis. `docs/`), bukan lewat file memory.
-
-Agent diinstruksikan untuk tidak pernah menyimpan kredensial — hanya nama variabel atau lokasinya.
+Token bersifat pribadi — jangan di-commit, jangan dibagikan. Nama yang dipetakan ke token itulah yang muncul sebagai penulis tiap entri.
 
 ## Isi plugin
 
@@ -42,18 +43,42 @@ Agent diinstruksikan untuk tidak pernah menyimpan kredensial — hanya nama vari
 | `plugin/agents/project-memory.md` | Definisi agent (mode RECALL & CAPTURE, aturan ADR) |
 | `plugin/scripts/pm-context.sh` | Deteksi repo, branch, lineage — read-only, tidak pernah menulis ke repo |
 | `plugin/hooks/session-context.sh` | Menyuntikkan protokol recall/capture di awal sesi |
-| `plugin/hooks/hooks.json` | Pendaftaran hook `SessionStart` |
+| `plugin/.mcp.json` | Sambungan ke server memory, URL dan token dari environment |
 
 Hook dipakai karena plugin tidak bisa menulis ke `CLAUDE.md` pengguna. Hook diam total di direktori yang bukan repo git.
 
+## Tool MCP
+
+`memory_recall` · `memory_write` · `memory_search` · `memory_delete` · `adr_write` · `adr_list` · `lineage_put`
+
+Uji server yang sedang jalan:
+
+```bash
+cd server && PM_TOKEN=<token> node test/smoke.mjs
+```
+
+## Yang perlu disadari karena memory ini bersama
+
+Memory bersama adalah **publikasi ke tim**, bukan catatan pribadi. Fakta salah di dalamnya menyesatkan semua orang dan akan diperlakukan agent lain sebagai kebenaran. Karena itu:
+
+- Agent diinstruksikan menandai `confidence: likely` untuk apa pun yang belum terkonfirmasi, dan menghapus memory lama yang terbukti salah alih-alih membiarkan dua fakta bertentangan.
+- Server **menolak** tulisan yang menyerupai kredensial di titik tulis, bukan membersihkannya diam-diam. Sekali tersimpan, isinya permanen dan terbaca semua orang — jadi penolakan lebih baik daripada pembersihan.
+- Judul entri adalah kunci dedup: judul sama pada repo, scope, dan branch yang sama memperbarui entri lama, bukan menumpuk duplikat.
+
+## Kalau server mati
+
+Agent melapor bahwa memory tidak tersedia lalu melanjutkan tanpanya. Sesi tidak menggantung, tapi keunggulan kecepatannya hilang sampai server kembali. Backup, uptime, dan sertifikat TLS jadi tanggung jawab tim yang mengelola VPS — lihat bagian akhir [DEPLOY.md](server/DEPLOY.md).
+
 ## Sebelum dipublikasikan
 
-Sesuaikan URL di `plugin/.claude-plugin/plugin.json` dan di perintah instalasi di atas bila lokasi repo berbeda.
+Sesuaikan URL repo di `plugin/.claude-plugin/plugin.json`, domain di `server/deploy/nginx.conf.example`, dan default `PM_MEMORY_URL` di `plugin/.mcp.json` bila berbeda.
 
-## Menguji perubahan secara lokal
+## Merilis perubahan
+
+Naikkan `version` di `plugin/.claude-plugin/plugin.json` **dan** di `.claude-plugin/marketplace.json`; keduanya harus cocok.
+
+Menguji secara lokal sebelum rilis:
 
 ```bash
 /plugin marketplace add D:/Works/Neuron/claude-plugin-project-memory
 ```
-
-Naikkan `version` di `plugin/.claude-plugin/plugin.json` **dan** di `.claude-plugin/marketplace.json` setiap kali merilis; keduanya harus cocok.
