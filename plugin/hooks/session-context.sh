@@ -72,5 +72,11 @@ cat <<EOF
 
 $BRIEF
 
-Ada temuan baru di akhir tugas? Simpan dengan skill \`/project-memory:simpan-memory\`.
+Penulisan ke memory TIDAK otomatis — kamu yang harus memulainya. Begitu ada hal
+yang mahal ditemukan dan tidak jelas dari membaca satu file (alur bispro,
+keputusan desain beserta alternatif yang ditolak, jebakan yang menghabiskan
+waktu, konvensi tim, cara menjalankan atau men-debug sesuatu, keputusan
+non-teknikal dari pengguna), jalankan skill \`/project-memory:simpan-memory\`.
+Tulis langsung tanpa menunggu konfirmasi pengguna, lalu laporkan singkat apa
+yang disimpan. Temuan yang tidak disimpan hilang begitu sesi berakhir.
 EOF

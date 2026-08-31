@@ -20,13 +20,29 @@ import { buildOrientation, buildRelevant, promptToFtsQuery } from './retrieve.mj
  * Dibatasi supaya server yang hidup berminggu-minggu tidak menumpuk sesi mati.
  */
 const SESSION_CAP = 500;
-const sentPerSession = new Map();
-function rememberSent(key, set) {
-  sentPerSession.delete(key);
-  sentPerSession.set(key, set); // set ulang = pindah ke akhir, jadi LRU
-  while (sentPerSession.size > SESSION_CAP) {
-    sentPerSession.delete(sentPerSession.keys().next().value);
-  }
+const sessions = new Map();
+function sessionState(key) {
+  const st = sessions.get(key) ?? { sent: new Set(), prompts: 0 };
+  sessions.delete(key);
+  sessions.set(key, st); // set ulang = pindah ke akhir, jadi LRU
+  while (sessions.size > SESSION_CAP) sessions.delete(sessions.keys().next().value);
+  return st;
+}
+
+/**
+ * Kapan pengingat menyimpan temuan ikut disertakan.
+ *
+ * Penulisan memory sengaja TIDAK dipaksa lewat hook Stop — keputusan pengguna,
+ * supaya sesi tidak pernah terganggu. Konsekuensinya dorongan harus cukup kuat
+ * untuk tidak terlewat, tapi tidak boleh muncul di setiap prompt: pengingat yang
+ * selalu ada berubah jadi wallpaper yang diabaikan model, sekaligus biaya token
+ * yang terbuang di setiap pesan.
+ *
+ * Jadi muncul setelah sesi cukup dalam untuk punya temuan (prompt ke-3 ke atas),
+ * lalu berkala — bukan terus-menerus.
+ */
+function shouldNudge(prompts) {
+  return prompts >= 3 && prompts % 3 === 0;
 }
 
 const PORT = Number(process.env.PM_PORT ?? 8787);
@@ -358,17 +374,32 @@ const httpServer = createServer(async (req, res) => {
       .filter(Boolean);
     const budget = Math.max(500, Math.min(12000, Number(url.searchParams.get('budget')) || 3000));
 
-    const already = sentPerSession.get(sessionKey) ?? new Set();
-    const { ids, text: body } = buildRelevant(db, {
-      repo,
-      branch,
-      inheritFrom,
-      prompt: payload.prompt,
-      exclude: already,
-      budget,
-    });
-    for (const id of ids) already.add(id);
-    rememberSent(sessionKey, already);
+    const st = sessionState(sessionKey);
+    st.prompts += 1;
+
+    // Rute ini dipanggil pada SETIAP prompt setiap anggota tim, dan hook-nya
+    // gagal tanpa suara. Jadi bug apa pun di dalam retrieval tidak boleh
+    // menjatuhkan proses: sekali crash, seluruh tim kehilangan memory sampai
+    // ada yang menyadarinya. Pernah terjadi — satu variabel yang belum
+    // dideklarasikan membunuh server pada panggilan pertama.
+    let ids = [];
+    let body = '';
+    try {
+      const r = buildRelevant(db, {
+        repo,
+        branch,
+        inheritFrom,
+        prompt: payload.prompt,
+        exclude: st.sent,
+        budget,
+        nudge: shouldNudge(st.prompts),
+      });
+      ids = r.ids;
+      body = r.text;
+    } catch (err) {
+      console.error('[relevant]', err?.stack ?? err);
+    }
+    for (const id of ids) st.sent.add(id);
 
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-count': String(ids.length) });
     res.end(body);

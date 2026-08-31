@@ -130,7 +130,7 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
  */
 export function buildRelevant(
   db,
-  { repo, branch, inheritFrom = [], prompt, exclude = new Set(), budget = 3000, limit = 4 },
+  { repo, branch, inheritFrom = [], prompt, exclude = new Set(), budget = 3000, limit = 4, nudge = false },
 ) {
   const query = promptToFtsQuery(prompt);
   if (!query) return { ids: [], text: '' };
@@ -201,14 +201,28 @@ export function buildRelevant(
     if (picked.length >= limit) break;
   }
 
-  if (!picked.length) return { ids: [], text: '' };
+  const reminder = nudge
+    ? '\n\n---\nSesi ini sudah berjalan beberapa putaran. Kalau di sepanjangnya ada hal yang MAHAL ' +
+      'ditemukan dan tidak jelas dari membaca satu file — alur bispro, keputusan desain beserta ' +
+      'alternatif yang ditolak, jebakan yang menghabiskan waktu, konvensi tim, cara menjalankan ' +
+      'atau men-debug sesuatu, keputusan non-teknikal dari pengguna — simpan sekarang dengan skill ' +
+      '`/project-memory:simpan-memory`. Tulis langsung tanpa menunggu konfirmasi pengguna, lalu ' +
+      'laporkan singkat apa yang disimpan. Jangan menyimpan hal yang gampang di-grep dari kode, ' +
+      'dan jangan menyimpan kredensial.'
+    : '';
+
+  // Sesi yang promptnya tidak pernah cocok dengan entri mana pun tetap perlu
+  // diingatkan menyimpan — justru sesi seperti itulah yang paling mungkin
+  // menghasilkan temuan baru, karena memory belum menutupi topiknya.
+  if (!picked.length) return { ids: [], text: reminder ? reminder.replace(/^\n\n---\n/, '') : '' };
 
   const text =
     `# Memory relevan (${picked.length} entri)\n\n` +
     'Diambil otomatis dari memory tim berdasarkan permintaan di atas. Pakai ini alih-alih ' +
     'mengeksplorasi codebase dari nol; verifikasi ke kode hanya untuk path, nama, atau flag ' +
     'yang akan kamu ubah.\n\n' +
-    picked.join('\n\n');
+    picked.join('\n\n') +
+    reminder;
 
   return { ids, text };
 }

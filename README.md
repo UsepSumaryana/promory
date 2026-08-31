@@ -69,6 +69,18 @@ Tiga penjagaan yang membuatnya tidak menjadi beban:
 
 Prompt pengguna dikirim ke server memory untuk pemeringkatan. Server tidak menyimpannya — hanya id entri yang sudah dikirim, di memori proses, hilang saat restart.
 
+## Penulisan ke memory: sukarela, tapi diingatkan berkala
+
+Penulisan **tidak dipaksa**. Tidak ada hook `Stop` yang memblokir penyelesaian sesi — keputusan sadar, supaya sesi tanya-jawab singkat tidak pernah terganggu dan tidak ada tekanan menghasilkan entri asal-jadi.
+
+Konsekuensinya dorongan harus cukup kuat untuk tidak terlewat:
+
+- **SessionStart** menutup briefing dengan pernyataan tegas bahwa penulisan tidak otomatis dan temuan yang tidak disimpan akan hilang.
+- **UserPromptSubmit** menyisipkan pengingat mulai prompt ke-3, lalu setiap 3 prompt. Bukan di setiap pesan: pengingat yang selalu ada berubah jadi wallpaper yang diabaikan model, sekaligus biaya token yang terbuang. Pengingat tetap muncul walau tidak ada entri relevan — justru sesi seperti itu yang paling mungkin menghasilkan temuan baru.
+- Skill `simpan-memory` **menulis langsung tanpa meminta persetujuan**, lalu melaporkan apa yang disimpan. Bertanya lebih dulu membuat temuan hilang di sesi tanpa pengawasan, dan kesalahan lebih murah diperbaiki lewat GUI kurasi daripada tidak pernah tercatat.
+
+Kalau nanti terbukti masih terlalu sering terlewat, langkah berikutnya adalah hook `Stop` yang menolak penyelesaian sekali per sesi pada sesi substantif — lebih andal, tapi perlu penjaga anti-loop dan ambang supaya sesi remeh tidak diganggu.
+
 ## GUI admin
 
 Ada di `/ui` pada server yang sama, hanya untuk token ber-peran admin. Fungsinya: menjelajah dan mencari memory per repo, menyunting dan menghapus entri yang salah, melihat ADR dan lineage, membaca audit, serta mengelola anggota (buat token, rotasi, nonaktifkan, ubah peran).

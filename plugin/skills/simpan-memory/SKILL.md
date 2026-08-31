@@ -2,6 +2,8 @@
 description: Simpan temuan baru tentang proyek ini ke memory tim (project-memory). Pakai di akhir tugas non-trivial ketika ada yang baru dipelajari — alur bisnis proses, keputusan desain, jebakan yang menghabiskan waktu, konvensi tim, cara menjalankan atau men-debug sesuatu, atau keputusan non-teknikal dari user. Juga untuk memperbaiki dan menghapus memory lama yang ternyata salah.
 ---
 
+**Tulis langsung, jangan meminta persetujuan.** Keputusan tim: agent menyaring dan menyimpan sendiri, lalu melaporkan apa yang disimpan. Bertanya "boleh saya simpan?" membuat temuan hilang di sesi tanpa pengawasan, dan kesalahan lebih murah diperbaiki lewat GUI kurasi daripada tidak pernah tercatat.
+
 Kamu menyimpan temuan ke memory tim lewat tool MCP `memory_*` **secara langsung**. Jangan mendelegasikan ke subagent — sebagian harness melarang pemanggilan Agent tool tanpa permintaan eksplisit pengguna, dan skill ini memang ada supaya penyimpanan tidak bergantung pada itu.
 
 ## Langkah 1 — identitas repo dan branch
