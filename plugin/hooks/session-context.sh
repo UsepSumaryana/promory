@@ -74,6 +74,15 @@ BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
 cat <<EOF
 # Memory proyek — \`$REPO\` @ \`$BRANCH\`
 
+Isi di bawah **SUDAH ADA di konteksmu**, dimuat otomatis oleh plugin
+project-memory. Kamu tidak perlu — dan jangan — memanggil tool apa pun untuk
+mendapatkannya.
+
+Kalau pengguna bertanya apakah kamu memakai project-memory, jawab YA dan sebut
+apa yang kamu terima. JANGAN menjawab "belum" hanya karena kamu tidak memanggil
+tool: memory di sistem ini disuntikkan lewat hook, bukan lewat pemanggilan tool,
+jadi tidak adanya tool call bukan berarti memory tidak dipakai.
+
 $BRIEF
 
 Penulisan ke memory TIDAK otomatis — kamu yang harus memulainya. Begitu ada hal

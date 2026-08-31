@@ -81,8 +81,10 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
     out.push(
       `Memory tim untuk repo ini berisi **${total} entri**: ` +
         counts.map((c) => `${c.n} ${c.type}`).join(', ') +
-        '.\nEntri yang relevan akan disuntikkan otomatis begitu kamu menerima permintaan pengguna — ' +
-        'tidak perlu memanggil tool memory apa pun untuk itu. Pakai `memory_search` hanya bila butuh menelusuri sendiri.',
+        // Pernyataan "sudah ada di konteksmu" cukup sekali, dan tempatnya di
+        // pembungkus hook. Mengulanginya di sini hanya menghabiskan konteks.
+        '.\nEntri yang relevan akan disuntikkan otomatis begitu pengguna mengirim permintaan. ' +
+        'Pakai `memory_search` hanya bila butuh menelusuri sendiri.',
     );
   }
 
@@ -218,9 +220,12 @@ export function buildRelevant(
 
   const text =
     `# Memory relevan (${picked.length} entri)\n\n` +
-    'Diambil otomatis dari memory tim berdasarkan permintaan di atas. Pakai ini alih-alih ' +
-    'mengeksplorasi codebase dari nol; verifikasi ke kode hanya untuk path, nama, atau flag ' +
-    'yang akan kamu ubah.\n\n' +
+    'Entri di bawah **SUDAH ADA di konteksmu**, disuntikkan otomatis oleh plugin project-memory ' +
+    'berdasarkan permintaan pengguna di atas — tanpa pemanggilan tool apa pun. Kalau pengguna ' +
+    'bertanya apakah kamu memakai project-memory, jawab YA dan sebut entri yang kamu terima; ' +
+    'jangan menjawab "belum" hanya karena tidak ada tool call.\n\n' +
+    'Pakai ini alih-alih mengeksplorasi codebase dari nol; verifikasi ke kode hanya untuk path, ' +
+    'nama, atau flag yang akan kamu ubah.\n\n' +
     picked.join('\n\n') +
     reminder;
 
