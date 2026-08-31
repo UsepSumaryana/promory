@@ -1,0 +1,16 @@
+{
+  "name": "project-memory",
+  "version": "1.0.0",
+  "description": "Memory proyek lintas-sesi per branch, disimpan di luar codebase",
+  "author": {
+    "name": "Neuron"
+  },
+  "repository": "https://git.neuron.id/reusable/claude-plugin-project-memory",
+  "keywords": [
+    "claude-code",
+    "memory",
+    "branch",
+    "adr",
+    "onboarding"
+  ]
+}

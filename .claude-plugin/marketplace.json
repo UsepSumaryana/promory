@@ -1,0 +1,17 @@
+{
+  "name": "neuron",
+  "owner": {
+    "name": "Neuron"
+  },
+  "metadata": {
+    "description": "Plugin Claude Code internal Neuron"
+  },
+  "plugins": [
+    {
+      "name": "project-memory",
+      "version": "1.0.0",
+      "source": "./plugin",
+      "description": "Memory proyek lintas-sesi per branch, disimpan di luar codebase. Mempercepat pemahaman codebase dan bisnis proses, sadar lineage branch, dan mencatat ADR yang belum terdokumentasi."
+    }
+  ]
+}

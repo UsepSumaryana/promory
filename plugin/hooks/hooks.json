@@ -1,0 +1,17 @@
+{
+  "description": "Menyuntikkan protokol recall/capture project-memory di awal sesi",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-context.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
