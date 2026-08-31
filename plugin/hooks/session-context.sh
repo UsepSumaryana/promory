@@ -42,9 +42,17 @@ esc() { echo "$1" | sed 's/ /%20/g'; }
 # -f: curl gagal (exit != 0) pada status 4xx/5xx, bukan mengembalikan badan
 # galatnya sebagai "hasil". Tanpa ini, halaman 404 dari reverse proxy ikut
 # tersuntik ke konteks sesi sebagai kalau-kalau itu memory — pernah terjadi.
+# Anggaran byte briefing. Default 6000: cukup untuk beberapa entri penuh tanpa
+# memicu pemotongan harness. Naikkan lewat PM_BRIEF_BUDGET kalau memory sebuah
+# repo sudah banyak dan terlalu banyak entri turun jadi judul saja — server
+# memberi tahu berapa yang tersisa, jadi angkanya bisa disetel berdasarkan itu.
+BUDGET="${PM_BRIEF_BUDGET:-6000}"
+# Nilai non-numerik dari env akan merusak aritmetika di bawah; jatuhkan ke default.
+case "$BUDGET" in ''|*[!0-9]*) BUDGET=6000 ;; esac
+
 BRIEF="$(curl -sf --max-time 6 \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
-  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")" 2>/dev/null)" || exit 0
+  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET" 2>/dev/null)" || exit 0
 [ -n "$BRIEF" ] || exit 0
 
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
@@ -54,15 +62,19 @@ case "$BRIEF" in *'<html'*|*'<!DOCTYPE'*|*'<HTML'*) exit 0 ;; esac
 # KB pertama, sisanya dibuang ke file yang tidak dibaca model — recall tampak
 # berhasil padahal separuh isinya hilang (pernah terjadi pada 18,9 KB). Server
 # sudah mengirim indeks padat; ini jaring terakhir kalau memory tumbuh banyak.
-BRIEF="$(printf '%s' "$BRIEF" | head -c 6000)"
+# Batasnya mengikuti anggaran plus margin, bukan angka tetap. Versi bernilai
+# tetap 6000 justru memotong briefing saat PM_BRIEF_BUDGET dinaikkan — jaring
+# pengaman berubah jadi pengikat, dan knob-nya tidak berfungsi.
+BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
 
 cat <<EOF
 # Memory proyek — \`$REPO\` @ \`$BRANCH\`
 
-Indeks apa yang sudah diketahui tim tentang repo ini. Kalau sebuah judul
-menjawab pertanyaan pengguna, ambil isi lengkapnya dengan tool MCP
-\`memory_recall\` atau \`memory_search\` — jangan mengeksplorasi codebase dari
-nol untuk hal yang sudah tercatat di sini.
+Ini yang sudah diketahui tim tentang repo ini, isinya lengkap dan siap dipakai.
+Jangan mengeksplorasi codebase dari nol untuk hal yang sudah tercatat di bawah,
+dan jangan memanggil \`memory_recall\` untuk isi yang sudah ada di sini. Yang
+tetap perlu diperiksa ke kode hanyalah path, nama fungsi, atau flag yang akan
+kamu ubah — sisanya adalah snapshot saat ditulis.
 
 $BRIEF
 

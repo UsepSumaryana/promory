@@ -299,9 +299,10 @@ const httpServer = createServer(async (req, res) => {
     // mode=full hanya untuk diagnosa manual; hook selalu memakai indeks padat,
     // karena stdout hook yang besar dipotong harness dan isinya hilang separuh.
     const full = url.searchParams.get('mode') === 'full';
+    const budget = Math.max(1000, Math.min(20000, Number(url.searchParams.get('budget')) || 6000));
     const { empty, text: body } = full
       ? buildRecall(db, { repo, branch, inheritFrom })
-      : buildBrief(db, { repo, branch, inheritFrom });
+      : buildBrief(db, { repo, branch, inheritFrom, budget });
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(empty) });
     res.end(body);
     return;
