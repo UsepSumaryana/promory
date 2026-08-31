@@ -77,6 +77,20 @@ export function openDb(path) {
       repo       TEXT,
       detail     TEXT
     );
+
+    -- Token disimpan sebagai hash SHA-256, tidak pernah sebagai teks asli.
+    -- Konsekuensinya token hanya bisa dilihat sekali saat dibuat; yang hilang
+    -- harus dirotasi, tidak bisa dibaca ulang. Itu memang yang diinginkan —
+    -- database yang bocor tidak boleh menyerahkan akses semua orang.
+    CREATE TABLE IF NOT EXISTS users (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      name         TEXT NOT NULL UNIQUE,
+      token_hash   TEXT NOT NULL UNIQUE,
+      role         TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
+      created_at   TEXT NOT NULL,
+      disabled_at  TEXT,
+      last_seen_at TEXT
+    );
   `);
   return db;
 }

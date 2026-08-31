@@ -1,38 +1,28 @@
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { fileURLToPath } from 'node:url';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { z } from 'zod';
 import { openDb, audit } from './db.mjs';
+import { authenticate, seedFromEnv } from './auth.mjs';
+import { handleAdminApi } from './admin-api.mjs';
 
 const PORT = Number(process.env.PM_PORT ?? 8787);
 const HOST = process.env.PM_HOST ?? '127.0.0.1';
 const DB_PATH = process.env.PM_DB ?? './data/memory.db';
 
-/**
- * Token dipetakan ke nama penulis: PM_TOKENS="usep:tok_a,rafi:tok_b".
- * Nama itulah yang tercatat sebagai author, sehingga setiap fakta di store
- * bersama bisa ditelusuri asalnya.
- */
-function loadTokens() {
-  const raw = (process.env.PM_TOKENS ?? '').trim();
-  if (!raw) {
-    console.error('PM_TOKENS kosong — server menolak semua permintaan. Set PM_TOKENS="nama:token,..."');
-    return new Map();
-  }
-  const map = new Map();
-  for (const pair of raw.split(',')) {
-    const idx = pair.indexOf(':');
-    if (idx < 1) continue;
-    const name = pair.slice(0, idx).trim();
-    const token = pair.slice(idx + 1).trim();
-    if (name && token) map.set(token, name);
-  }
-  return map;
-}
-
-const TOKENS = loadTokens();
 const db = openDb(DB_PATH);
+
+// PM_TOKENS hanya menyemai pengguna pertama; setelah tabel users terisi,
+// database yang jadi sumber kebenaran dan env var itu diabaikan.
+const seed = seedFromEnv(db, process.env.PM_TOKENS);
+if (seed.seeded) console.log(`${seed.seeded} pengguna disemai dari PM_TOKENS (yang pertama jadi admin).`);
+if (!db.prepare('SELECT COUNT(*) AS n FROM users').get().n)
+  console.error('Belum ada pengguna — semua permintaan akan ditolak. Buat admin: node src/admin.mjs add <nama> --admin');
+
+const UI_HTML = readFileSync(fileURLToPath(new URL('./ui.html', import.meta.url)), 'utf8');
 const als = new AsyncLocalStorage();
 const author = () => als.getStore()?.author ?? 'unknown';
 const now = () => new Date().toISOString();
@@ -314,29 +304,58 @@ const handler = createMcpHandler(() => buildServer(), {
 const mcpNode = toNodeHandler(handler);
 
 const httpServer = createServer(async (req, res) => {
-  if (req.url === '/health') {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+
+  if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, entries: db.prepare('SELECT COUNT(*) AS n FROM entries').get().n }));
     return;
   }
 
-  const auth = req.headers.authorization ?? '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  const who = TOKENS.get(token);
-  if (!who) {
+  // Halaman GUI disajikan tanpa autentikasi: isinya hanya kerangka kosong, dan
+  // setiap data yang ditampilkannya diambil lewat /api yang menuntut token admin.
+  // Menaruh token di URL demi "mengamankan" halaman ini justru akan membocorkannya
+  // ke log akses dan riwayat browser.
+  if (url.pathname === '/ui' || url.pathname === '/ui/') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-frame-options': 'DENY' });
+    res.end(UI_HTML);
+    return;
+  }
+
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const user = authenticate(db, token);
+  if (!user) {
     res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
-    res.end(JSON.stringify({ error: 'token tidak dikenal' }));
+    res.end(JSON.stringify({ error: 'token tidak dikenal atau sudah dinonaktifkan' }));
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/')) {
+    if (user.role !== 'admin') {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'butuh peran admin' }));
+      return;
+    }
+    try {
+      await handleAdminApi(db, req, res, user, url);
+    } catch (err) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 
   // Nama penulis dibawa lewat AsyncLocalStorage agar setiap tool handler bisa
   // mencatat author tanpa harus meneruskannya sebagai argumen tool — argumen
   // tool diisi model, dan identitas tidak boleh berasal dari sana.
-  als.run({ author: who }, () => mcpNode(req, res));
+  als.run({ author: user.name }, () => mcpNode(req, res));
 });
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`project-memory MCP mendengarkan di http://${HOST}:${PORT}  db=${DB_PATH}  pengguna=${TOKENS.size}`);
+  const users = db.prepare("SELECT COUNT(*) AS n FROM users WHERE disabled_at IS NULL").get().n;
+  console.log(`project-memory mendengarkan di http://${HOST}:${PORT}  db=${DB_PATH}  pengguna aktif=${users}`);
+  console.log(`GUI admin: http://${HOST}:${PORT}/ui`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

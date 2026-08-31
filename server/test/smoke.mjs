@@ -148,5 +148,61 @@ check('repo tanpa memory menyuruh jangan mengarang', out(empty).includes('Jangan
 const search = await call('memory_search', { repo: 'demo-repo', query: 'Isi uji yang diperbarui' });
 check('memory_search menemukan lewat isi', out(search).includes('Judul uji'), out(search));
 
+
+/* ---------- admin API + kontrol akses ---------- */
+const adminFetch = (path, opts = {}) =>
+  fetch(`${URL_}${path}`, {
+    ...opts,
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+
+const me = await (await adminFetch('/api/me')).json();
+check('GET /api/me mengenali admin', me.role === 'admin', JSON.stringify(me));
+
+const ui = await fetch(`${URL_}/ui`);
+const uiBody = await ui.text();
+check('/ui disajikan tanpa token', ui.ok && uiBody.includes('project-memory'), `status ${ui.status}`);
+
+const repos = await (await adminFetch('/api/repos')).json();
+check('GET /api/repos memuat demo-repo', repos.some((r) => r.repo === 'demo-repo'), JSON.stringify(repos));
+
+const entries = await (await adminFetch('/api/entries?repo=demo-repo')).json();
+check('GET /api/entries mengembalikan entri', entries.length > 0, `${entries.length} entri`);
+
+const target = entries.find((e) => e.title === 'Judul uji');
+const patched = await (await adminFetch(`/api/entries/${target.id}`, {
+  method: 'PATCH',
+  body: JSON.stringify({ body: 'Disunting lewat GUI' }),
+})).json();
+check('PATCH entri menyimpan perubahan', patched.body === 'Disunting lewat GUI', patched.body);
+check('suntingan dicatat atas nama kurator', patched.author.includes('kurasi'), patched.author);
+
+const newUser = await (await adminFetch('/api/users', {
+  method: 'POST',
+  body: JSON.stringify({ name: 'anggota-uji', role: 'member' }),
+})).json();
+check('POST /api/users mengembalikan token sekali', typeof newUser.token === 'string' && newUser.token.startsWith('pm_'));
+
+const memberProbe = await fetch(`${URL_}/api/users`, { headers: { authorization: `Bearer ${newUser.token}` } });
+check('member ditolak dari /api (403)', memberProbe.status === 403, `status ${memberProbe.status}`);
+
+const users = await (await adminFetch('/api/users')).json();
+const adminRow = users.find((u) => u.role === 'admin');
+const lastAdmin = await adminFetch(`/api/users/${adminRow.id}`, {
+  method: 'PATCH',
+  body: JSON.stringify({ disabled: true }),
+});
+check('menonaktifkan admin terakhir ditolak (409)', lastAdmin.status === 409, `status ${lastAdmin.status}`);
+
+const memberRow = users.find((u) => u.name === 'anggota-uji');
+const disabled = await adminFetch(`/api/users/${memberRow.id}`, { method: 'PATCH', body: JSON.stringify({ disabled: true }) });
+check('menonaktifkan member diizinkan', disabled.ok, `status ${disabled.status}`);
+
+const revoked = await fetch(`${URL_}/api/me`, { headers: { authorization: `Bearer ${newUser.token}` } });
+check('token yang dinonaktifkan langsung ditolak (401)', revoked.status === 401, `status ${revoked.status}`);
+
+const audit = await (await adminFetch('/api/audit?limit=10')).json();
+check('audit mencatat pembuatan pengguna', audit.some((a) => a.action === 'create-user'), audit.map((a) => a.action).join(','));
+
 console.log(failed ? `\n${failed} pemeriksaan GAGAL` : '\nSemua pemeriksaan lulus');
 process.exit(failed ? 1 : 0);

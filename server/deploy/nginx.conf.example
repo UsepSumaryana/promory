@@ -30,6 +30,22 @@ server {
         proxy_set_header Authorization $http_authorization;
     }
 
+    # GUI admin dan API-nya. Halaman /ui sendiri hanya kerangka kosong; semua
+    # data lewat /api yang menuntut token ber-peran admin.
+    location ~ ^/(ui|api)/? {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Authorization $http_authorization;
+
+        # Lapisan kedua opsional: batasi GUI ke jaringan kantor atau VPN.
+        # Peran admin sudah menjaga datanya, tapi mempersempit siapa yang bisa
+        # menjangkau halaman ini mengurangi permukaan serangan tanpa biaya.
+        # allow 10.0.0.0/8;
+        # deny all;
+    }
+
     location /health {
         proxy_pass http://127.0.0.1:8787/health;
     }

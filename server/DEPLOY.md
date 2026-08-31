@@ -23,13 +23,15 @@ cd /opt/project-memory/server && sudo -u project-memory npm ci --omit=dev
 sudo -u project-memory cp .env.example .env && sudo chmod 600 .env
 ```
 
-Isi `PM_TOKENS` dengan satu token per orang. Token acak:
+`PM_TOKENS` hanya dipakai untuk **menyemai pengguna pertama**, dan hanya selagi tabel `users` masih kosong. Setelah itu database yang jadi sumber kebenaran, dan mengubah `PM_TOKENS` tidak lagi berpengaruh — ini yang mencegah env var lama diam-diam menghidupkan kembali akses yang sudah dicabut lewat GUI.
+
+Cara yang disarankan: kosongkan `PM_TOKENS`, lalu buat admin pertama lewat CLI setelah service jalan:
 
 ```bash
-openssl rand -hex 32
+sudo -u project-memory node src/admin.mjs add usep --admin
 ```
 
-Satu token per orang, bukan token bersama — nama di sisi kiri titik dua tercatat sebagai author tiap entri, dan itu satu-satunya cara menelusuri asal sebuah fakta.
+Token tampil **sekali saja** — server hanya menyimpan hash SHA-256-nya. Anggota berikutnya dibuat lewat GUI.
 
 ## 4. Jalankan sebagai service
 
@@ -41,7 +43,22 @@ sudo cp deploy/project-memory.service /etc/systemd/system/ && sudo systemctl ena
 curl -s localhost:8787/health
 ```
 
-## 5. TLS di depannya
+## 5. GUI admin
+
+Setelah service jalan, GUI ada di `/ui`. Masuk dengan token admin; token member akan ditolak dengan 403.
+
+Dari GUI Anda bisa menjelajah memory per repo, menyunting dan menghapus entri yang salah, melihat ADR dan lineage, membaca audit, serta membuat, merotasi, menonaktifkan, dan mengubah peran anggota.
+
+Dua hal yang perlu diketahui:
+
+- **Token hanya tampil sekali** saat dibuat atau dirotasi. Yang hilang tidak bisa dibaca ulang, hanya dirotasi.
+- **Admin aktif terakhir tidak bisa dinonaktifkan atau diturunkan** lewat GUI — permintaan itu ditolak 409. Kalau tetap terjadi kebuntuan, pulihkan lewat CLI di VPS:
+
+```bash
+sudo -u project-memory node src/admin.mjs list
+```
+
+## 6. TLS di depannya
 
 ```bash
 sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/project-memory && sudo certbot --nginx -d memory.neuron.id
@@ -49,7 +66,7 @@ sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/project-memory && s
 
 Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permintaan, jadi tanpa TLS token itu terbaca siapa pun di jalur jaringan. Jangan mengubah `PM_HOST` ke `0.0.0.0`.
 
-## 6. Setiap anggota tim
+## 7. Setiap anggota tim
 
 ```bash
 /plugin marketplace add <url-repo-plugin>
@@ -80,13 +97,13 @@ Pakai `.backup`, bukan `cp` — mode WAL berarti salinan mentah bisa tertangkap 
 
 ## Operasional
 
-Melihat siapa menulis apa:
+Tab **Audit** di GUI menampilkan hal yang sama, tapi lewat shell:
 
 ```bash
 sudo -u project-memory sqlite3 /var/lib/project-memory/memory.db "SELECT at, author, action, repo, detail FROM audit ORDER BY id DESC LIMIT 30;"
 ```
 
-Mencabut akses seseorang: hapus barisnya dari `PM_TOKENS`, lalu `sudo systemctl restart project-memory`. Entri yang sudah dia tulis tetap ada beserta namanya.
+Mencabut akses seseorang: nonaktifkan lewat GUI (tab Akses) atau `node src/admin.mjs disable <id>`. Berlaku seketika pada permintaan berikutnya — tidak perlu restart. Entri yang sudah dia tulis tetap ada beserta namanya.
 
 ## Yang harus Anda tanggung sendiri dengan rute VPS
 

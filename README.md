@@ -14,7 +14,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 
 | Bagian | Di mana | Fungsi |
 |---|---|---|
-| `server/` | VPS tim | MCP server + SQLite. Lihat [DEPLOY.md](server/DEPLOY.md) |
+| `server/` | VPS tim | MCP server + GUI admin + SQLite. Lihat [DEPLOY.md](server/DEPLOY.md) |
 | `plugin/` | Mesin tiap anggota | Agent, script lineage, hook, dan konfigurasi MCP |
 
 ## Instalasi untuk anggota tim
@@ -46,6 +46,26 @@ Token bersifat pribadi — jangan di-commit, jangan dibagikan. Nama yang dipetak
 | `plugin/.mcp.json` | Sambungan ke server memory, URL dan token dari environment |
 
 Hook dipakai karena plugin tidak bisa menulis ke `CLAUDE.md` pengguna. Hook diam total di direktori yang bukan repo git.
+
+## GUI admin
+
+Ada di `/ui` pada server yang sama, hanya untuk token ber-peran admin. Fungsinya: menjelajah dan mencari memory per repo, menyunting dan menghapus entri yang salah, melihat ADR dan lineage, membaca audit, serta mengelola anggota (buat token, rotasi, nonaktifkan, ubah peran).
+
+Kurasi manusia inilah jawaban atas risiko terbesar memory bersama: agent bisa menulis fakta yang salah, dan tanpa tempat untuk memperbaikinya, kesalahan itu menyebar ke seluruh tim.
+
+Beberapa keputusan yang mungkin mengejutkan:
+
+- **Token disimpan sebagai hash SHA-256**, jadi hanya tampil sekali saat dibuat atau dirotasi. Database yang bocor tidak menyerahkan akses siapa pun.
+- **Admin aktif terakhir tidak bisa dinonaktifkan atau diturunkan** — permintaan itu ditolak 409, karena pemulihannya hanya lewat shell VPS.
+- **Suntingan lewat GUI mengubah kolom penulis** menjadi nama kurator, supaya kolom itu selalu berarti "siapa yang bertanggung jawab atas isi ini sekarang".
+- **Halaman `/ui` disajikan tanpa autentikasi** karena isinya hanya kerangka kosong; semua datanya lewat `/api` yang menuntut peran admin. Menaruh token di URL demi "mengamankan" halaman justru membocorkannya ke log akses dan riwayat browser.
+- Isi memory ditulis agent, jadi GUI memperlakukannya sebagai data tak tepercaya: semua render lewat `textContent`, tidak pernah `innerHTML`, dengan CSP yang menutup sumber skrip eksternal.
+
+Pemulihan darurat lewat shell VPS:
+
+```bash
+node src/admin.mjs list | add <nama> --admin | rotate <id> | disable <id> | enable <id>
+```
 
 ## Tool MCP
 

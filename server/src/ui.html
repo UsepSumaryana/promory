@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>project-memory — admin</title>
+<!-- Isi memory ditulis oleh agent, jadi diperlakukan sebagai data tak tepercaya.
+     Halaman ini merender semuanya lewat textContent, tidak pernah innerHTML, dan
+     CSP di bawah menutup jalur eksekusi skrip dari luar seandainya ada yang lolos. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #fff; --ink: #1c1c1e; --muted: #6b6b70;
+    --line: #e3e3e6; --accent: #2f5fd0; --danger: #b3261e; --ok: #1a7f4b;
+    --chip: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e1f23; --ink: #e9e9ec; --muted: #9a9aa2;
+      --line: #2e3036; --accent: #7aa2f7; --danger: #f2746b; --ok: #4ec98a;
+      --chip: #26282e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px;
+           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .grow { flex:1 }
+  .muted { color:var(--muted) }
+  main { display:grid; grid-template-columns:230px 1fr; min-height:calc(100vh - 49px); }
+  aside { border-right:1px solid var(--line); padding:12px; background:var(--panel); }
+  section { padding:16px 20px; min-width:0; }
+  button { font:inherit; padding:6px 11px; border:1px solid var(--line); border-radius:7px;
+           background:var(--panel); color:var(--ink); cursor:pointer; }
+  button:hover { border-color:var(--accent) }
+  button.primary { background:var(--accent); color:#fff; border-color:transparent }
+  button.danger { color:var(--danger) }
+  button.tab { border:0; background:none; padding:7px 12px; border-radius:7px }
+  button.tab[aria-selected=true] { background:var(--chip); font-weight:600 }
+  input, textarea, select { font:inherit; width:100%; padding:7px 9px; border-radius:7px;
+           border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  textarea { min-height:80px; resize:vertical }
+  .repo { display:block; width:100%; text-align:left; border:0; background:none; padding:7px 9px;
+          border-radius:7px; cursor:pointer; color:var(--ink) }
+  .repo[aria-current=true] { background:var(--chip); font-weight:600 }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:13px 15px; margin-bottom:10px }
+  .card h3 { margin:0 0 6px; font-size:14.5px }
+  .meta { font-size:12px; color:var(--muted); display:flex; gap:8px; flex-wrap:wrap; margin-bottom:7px }
+  .chip { background:var(--chip); border-radius:999px; padding:1px 8px; font-size:11.5px }
+  .row { display:flex; gap:8px; align-items:center }
+  .field { margin-bottom:9px }
+  .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:3px }
+  table { border-collapse:collapse; width:100%; font-size:13px }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top }
+  th { color:var(--muted); font-weight:600; font-size:12px }
+  code { background:var(--chip); padding:2px 6px; border-radius:5px; font-size:12.5px;
+         word-break:break-all; font-family:ui-monospace,Menlo,Consolas,monospace }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink);
+           padding:18px; max-width:640px; width:calc(100vw - 40px) }
+  dialog::backdrop { background:rgba(0,0,0,.45) }
+  .banner { padding:10px 14px; border-radius:9px; margin-bottom:12px; border:1px solid var(--line) }
+  .banner.err { border-color:var(--danger); color:var(--danger) }
+  .banner.ok { border-color:var(--ok); color:var(--ok) }
+  .empty { color:var(--muted); padding:26px 0 }
+  .login { max-width:420px; margin:14vh auto; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+const $ = (t, props = {}, kids = []) => {
+  const el = document.createElement(t);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') el.className = v;
+    else if (k === 'text') el.textContent = v;          // selalu textContent, tidak pernah innerHTML
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) el.setAttribute(k, v);
+  }
+  for (const kid of [].concat(kids)) if (kid) el.append(kid);
+  return el;
+};
+
+const state = { token: localStorage.getItem('pm_token') || '', me: null, repo: null, tab: 'entries', data: [], q: '' };
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+  if (res.status === 401 || res.status === 403) {
+    localStorage.removeItem('pm_token');
+    state.token = '';
+    render();
+    throw new Error('Token ditolak. Masuk lagi.');
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+}
+
+function banner(msg, kind = 'err') {
+  const host = document.getElementById('banner');
+  if (host) host.replaceChildren($('div', { class: `banner ${kind}`, text: msg }));
+}
+
+/* ---------- login ---------- */
+function renderLogin(err) {
+  const input = $('input', { type: 'password', placeholder: 'pm_...', autofocus: 'true' });
+  const submit = async () => {
+    state.token = input.value.trim();
+    try {
+      state.me = await api('/api/me');
+      localStorage.setItem('pm_token', state.token);
+      render();
+    } catch (e) {
+      renderLogin(e.message);
+    }
+  };
+  document.getElementById('app').replaceChildren(
+    $('div', { class: 'login' }, [
+      $('h1', { text: 'project-memory' }),
+      $('p', { class: 'muted', text: 'Masuk dengan token admin. Token member tidak bisa membuka halaman ini.' }),
+      err ? $('div', { class: 'banner err', text: err }) : null,
+      $('div', { class: 'field' }, [$('label', { text: 'Token' }), input]),
+      $('button', { class: 'primary', text: 'Masuk', onclick: submit }),
+    ]),
+  );
+  input.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+}
+
+/* ---------- tampilan utama ---------- */
+const TABS = [
+  ['entries', 'Memory'],
+  ['adrs', 'ADR'],
+  ['lineage', 'Lineage'],
+  ['audit', 'Audit'],
+  ['users', 'Akses'],
+];
+
+async function loadTab() {
+  const host = document.getElementById('content');
+  host.replaceChildren($('div', { class: 'empty', text: 'Memuat…' }));
+  try {
+    if (state.tab === 'entries') {
+      if (!state.repo) return host.replaceChildren($('div', { class: 'empty', text: 'Pilih repo di kiri.' }));
+      state.data = await api(`/api/entries?repo=${encodeURIComponent(state.repo)}${state.q ? `&q=${encodeURIComponent(state.q)}` : ''}`);
+      renderEntries(host);
+    } else if (state.tab === 'adrs') {
+      if (!state.repo) return host.replaceChildren($('div', { class: 'empty', text: 'Pilih repo di kiri.' }));
+      state.data = await api(`/api/adrs?repo=${encodeURIComponent(state.repo)}`);
+      renderAdrs(host);
+    } else if (state.tab === 'lineage') {
+      state.data = await api(`/api/lineage?repo=${encodeURIComponent(state.repo || '')}`);
+      renderLineage(host);
+    } else if (state.tab === 'audit') {
+      state.data = await api('/api/audit?limit=150');
+      renderAudit(host);
+    } else if (state.tab === 'users') {
+      state.data = await api('/api/users');
+      renderUsers(host);
+    }
+  } catch (e) {
+    host.replaceChildren($('div', { class: 'banner err', text: e.message }));
+  }
+}
+
+function renderEntries(host) {
+  if (!state.data.length)
+    return host.replaceChildren($('div', { class: 'empty', text: 'Tidak ada entri untuk filter ini.' }));
+  host.replaceChildren(
+    ...state.data.map((e) =>
+      $('div', { class: 'card' }, [
+        $('h3', { text: e.title }),
+        $('div', { class: 'meta' }, [
+          $('span', { class: 'chip', text: e.scope === 'shared' ? 'bersama' : `branch: ${e.branch}` }),
+          $('span', { class: 'chip', text: e.type }),
+          $('span', { class: 'chip', text: e.confidence }),
+          $('span', { text: `oleh ${e.author}` }),
+          $('span', { text: `diperbarui ${e.updated_at.slice(0, 10)}` }),
+        ]),
+        $('div', { text: e.body }),
+        e.why ? $('div', { class: 'muted', text: `Kenapa penting: ${e.why}` }) : null,
+        $('div', { class: 'row', style: 'margin-top:9px' }, [
+          $('button', { text: 'Sunting', onclick: () => editEntry(e) }),
+          $('button', { class: 'danger', text: 'Hapus', onclick: () => deleteEntry(e) }),
+        ]),
+      ]),
+    ),
+  );
+}
+
+function editEntry(e) {
+  const f = {
+    title: $('input', { value: e.title }),
+    body: $('textarea', { text: e.body }),
+    why: $('input', { value: e.why || '' }),
+    type: $('select', {}, ['architecture', 'bispro', 'convention', 'gotcha', 'decision', 'env', 'process', 'people', 'reference']
+      .map((t) => $('option', { value: t, text: t, ...(t === e.type ? { selected: 'true' } : {}) }))),
+    confidence: $('select', {}, ['confirmed', 'likely'].map((c) =>
+      $('option', { value: c, text: c, ...(c === e.confidence ? { selected: 'true' } : {}) }))),
+  };
+  const err = $('div');
+  const dlg = $('dialog', {}, [
+    $('h3', { text: 'Sunting entri' }),
+    $('p', { class: 'muted', text: 'Suntingan tercatat atas namamu dan menggantikan penulis terakhir.' }),
+    err,
+    ...Object.entries(f).map(([k, el]) => $('div', { class: 'field' }, [$('label', { text: k }), el])),
+    $('div', { class: 'row' }, [
+      $('button', {
+        class: 'primary', text: 'Simpan',
+        onclick: async () => {
+          try {
+            await api(`/api/entries/${e.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                title: f.title.value, body: f.body.value, why: f.why.value,
+                type: f.type.value, confidence: f.confidence.value,
+              }),
+            });
+            dlg.close(); loadTab();
+          } catch (ex) { err.replaceChildren($('div', { class: 'banner err', text: ex.message })); }
+        },
+      }),
+      $('button', { text: 'Batal', onclick: () => dlg.close() }),
+    ]),
+  ]);
+  document.body.append(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+}
+
+function deleteEntry(e) {
+  const reason = $('input', { placeholder: 'kenapa dihapus — tercatat di audit' });
+  const dlg = $('dialog', {}, [
+    $('h3', { text: 'Hapus entri' }),
+    $('p', { text: e.title }),
+    $('p', { class: 'muted', text: 'Penghapusan permanen. Alasannya tercatat di audit beserta namamu.' }),
+    $('div', { class: 'field' }, [$('label', { text: 'Alasan' }), reason]),
+    $('div', { class: 'row' }, [
+      $('button', {
+        class: 'primary danger', text: 'Hapus',
+        onclick: async () => {
+          await api(`/api/entries/${e.id}?reason=${encodeURIComponent(reason.value || '(tanpa alasan)')}`, { method: 'DELETE' });
+          dlg.close(); loadTab();
+        },
+      }),
+      $('button', { text: 'Batal', onclick: () => dlg.close() }),
+    ]),
+  ]);
+  document.body.append(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+}
+
+function renderAdrs(host) {
+  if (!state.data.length) return host.replaceChildren($('div', { class: 'empty', text: 'Belum ada ADR di repo ini.' }));
+  host.replaceChildren(
+    ...state.data.map((a) =>
+      $('div', { class: 'card' }, [
+        $('h3', { text: `ADR-${String(a.number).padStart(4, '0')} — ${a.title}` }),
+        $('div', { class: 'meta' }, [
+          $('span', { class: 'chip', text: a.status }),
+          a.scope ? $('span', { class: 'chip', text: a.scope }) : null,
+          a.branch ? $('span', { text: `branch: ${a.branch}` }) : null,
+          $('span', { text: `oleh ${a.author}` }),
+        ]),
+        $('div', { text: `Konteks: ${a.context}` }),
+        $('div', { text: `Keputusan: ${a.decision}` }),
+        a.alternatives ? $('div', { text: `Alternatif ditolak: ${a.alternatives}` }) : null,
+        a.consequences ? $('div', { class: 'muted', text: `Konsekuensi: ${a.consequences}` }) : null,
+      ]),
+    ),
+  );
+}
+
+function renderLineage(host) {
+  if (!state.data.length) return host.replaceChildren($('div', { class: 'empty', text: 'Belum ada lineage tercatat.' }));
+  host.replaceChildren(
+    $('table', {}, [
+      $('thead', {}, $('tr', {}, ['branch', 'induk', 'fork', 'merge masuk', 'catatan'].map((h) => $('th', { text: h })))),
+      $('tbody', {}, state.data.map((l) =>
+        $('tr', {}, [l.branch, l.parent_branch || '-', (l.fork_point || '-').slice(0, 10), l.merged_in || '-', l.note || '-']
+          .map((v) => $('td', { text: v })))))
+    ]),
+  );
+}
+
+function renderAudit(host) {
+  host.replaceChildren(
+    $('table', {}, [
+      $('thead', {}, $('tr', {}, ['waktu', 'oleh', 'aksi', 'repo', 'detail'].map((h) => $('th', { text: h })))),
+      $('tbody', {}, state.data.map((a) =>
+        $('tr', {}, [a.at.replace('T', ' ').slice(0, 19), a.author, a.action, a.repo || '-', a.detail || '-']
+          .map((v) => $('td', { text: v })))))
+    ]),
+  );
+}
+
+function showToken(token, name) {
+  const dlg = $('dialog', {}, [
+    $('h3', { text: `Token untuk ${name}` }),
+    $('p', { class: 'muted', text: 'Tampil sekali ini saja — server hanya menyimpan hash-nya. Salin sekarang; kalau hilang, rotasi.' }),
+    $('p', {}, $('code', { text: token })),
+    $('button', { class: 'primary', text: 'Sudah disalin', onclick: () => dlg.close() }),
+  ]);
+  document.body.append(dlg);
+  dlg.addEventListener('close', () => { dlg.remove(); loadTab(); });
+  dlg.showModal();
+}
+
+function renderUsers(host) {
+  const name = $('input', { placeholder: 'nama orang' });
+  const role = $('select', {}, [$('option', { value: 'member', text: 'member' }), $('option', { value: 'admin', text: 'admin' })]);
+  host.replaceChildren(
+    $('div', { class: 'card' }, [
+      $('h3', { text: 'Tambah anggota' }),
+      $('p', { class: 'muted', text: 'Satu token per orang. Nama ini yang muncul sebagai penulis tiap entri, jadi pakai nama orang, bukan nama layanan.' }),
+      $('div', { class: 'row' }, [name, role, $('button', {
+        class: 'primary', text: 'Buat token',
+        onclick: async () => {
+          try {
+            const r = await api('/api/users', { method: 'POST', body: JSON.stringify({ name: name.value, role: role.value }) });
+            showToken(r.token, r.name);
+          } catch (e) { banner(e.message); }
+        },
+      })]),
+    ]),
+    $('div', { id: 'banner' }),
+    $('table', {}, [
+      $('thead', {}, $('tr', {}, ['#', 'nama', 'peran', 'status', 'terakhir aktif', ''].map((h) => $('th', { text: h })))),
+      $('tbody', {}, state.data.map((u) =>
+        $('tr', {}, [
+          $('td', { text: `#${u.id}` }),
+          $('td', { text: u.name }),
+          $('td', { text: u.role }),
+          $('td', { text: u.disabled_at ? 'nonaktif' : 'aktif' }),
+          $('td', { text: u.last_seen_at ? u.last_seen_at.replace('T', ' ').slice(0, 16) : '-' }),
+          $('td', {}, $('div', { class: 'row' }, [
+            $('button', {
+              text: 'Rotasi', onclick: async () => {
+                const r = await api(`/api/users/${u.id}/rotate`, { method: 'POST' });
+                showToken(r.token, r.name);
+              },
+            }),
+            $('button', {
+              text: u.disabled_at ? 'Aktifkan' : 'Nonaktifkan',
+              onclick: async () => {
+                try {
+                  await api(`/api/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ disabled: !u.disabled_at }) });
+                  loadTab();
+                } catch (e) { banner(e.message); }
+              },
+            }),
+            $('button', {
+              text: u.role === 'admin' ? 'Jadikan member' : 'Jadikan admin',
+              onclick: async () => {
+                try {
+                  await api(`/api/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ role: u.role === 'admin' ? 'member' : 'admin' }) });
+                  loadTab();
+                } catch (e) { banner(e.message); }
+              },
+            }),
+          ])),
+        ]))),
+    ]),
+  );
+}
+
+async function render() {
+  if (!state.token) return renderLogin();
+  if (!state.me) {
+    try { state.me = await api('/api/me'); } catch (e) { return renderLogin(e.message); }
+  }
+  const repos = await api('/api/repos').catch(() => []);
+  if (!state.repo && repos.length) state.repo = repos[0].repo;
+
+  const search = $('input', { placeholder: 'cari judul / isi…', value: state.q, style: 'max-width:280px' });
+  search.addEventListener('input', () => { state.q = search.value; clearTimeout(render._t); render._t = setTimeout(loadTab, 250); });
+
+  document.getElementById('app').replaceChildren(
+    $('header', {}, [
+      $('h1', { text: 'project-memory' }),
+      $('span', { class: 'chip', text: `${state.me.name} · ${state.me.role}` }),
+      $('div', { class: 'grow' }),
+      state.tab === 'entries' ? search : null,
+      $('button', {
+        text: 'Keluar',
+        onclick: () => { localStorage.removeItem('pm_token'); state.token = ''; state.me = null; render(); },
+      }),
+    ]),
+    $('main', {}, [
+      $('aside', {}, [
+        $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:6px', text: 'REPO' }),
+        ...(repos.length
+          ? repos.map((r) => $('button', {
+              class: 'repo', 'aria-current': String(r.repo === state.repo),
+              text: `${r.repo} (${r.entries})`,
+              onclick: () => { state.repo = r.repo; render(); },
+            }))
+          : [$('div', { class: 'muted', text: 'Belum ada memory.' })]),
+      ]),
+      $('section', {}, [
+        $('div', { class: 'row', style: 'margin-bottom:14px' },
+          TABS.map(([id, label]) => $('button', {
+            class: 'tab', 'aria-selected': String(state.tab === id), text: label,
+            onclick: () => { state.tab = id; render(); },
+          }))),
+        $('div', { id: 'banner' }),
+        $('div', { id: 'content' }),
+      ]),
+    ]),
+  );
+  loadTab();
+}
+
+render();
+</script>
+</body>
+</html>
