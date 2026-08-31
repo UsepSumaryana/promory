@@ -53,6 +53,22 @@ Slug repo diturunkan dari **URL remote**, bukan nama direktori, jadi dua orang y
 
 Satu kasus yang tidak bisa ditangani: repo **tanpa remote sama sekali**. Di situ satu-satunya nama yang tersisa adalah nama folder, dan itu memang berbeda antar orang. Script menandainya lewat `repo_slug_source: fallback-nama-direktori` dan agent diinstruksikan memperingatkan bahwa memory tersebut tidak akan menyatu dengan rekan.
 
+## Retrieval dua tahap (untuk skala ribuan entri)
+
+**Tahap 1 — orientasi, di awal sesi.** SessionStart hook berjalan sebelum pengguna mengetik apa pun, jadi relevansi belum bisa dihitung. Yang dikirim hanya peta: jumlah entri per tipe, ADR yang mengikat, lineage, dan entri ber-pin. **Ukurannya tetap ~1,4 KB baik pada 14 entri maupun 2.014 entri.**
+
+**Tahap 2 — entri relevan, setiap prompt.** UserPromptSubmit hook meneruskan stdin-nya ke `POST /relevant`; server mengurai prompt, memeringkat entri dengan BM25 lewat indeks FTS5, dan menyuntikkan hanya yang cocok. Terukur 0,9–1,8 KB per prompt, 138–156 ms pada 2.014 entri.
+
+Tiga penjagaan yang membuatnya tidak menjadi beban:
+
+- **Ambang relevansi.** Query OR mencocokkan entri yang hanya kena satu kata umum. Tanpa ambang, pertanyaan soal `maxIdle` ikut menarik entri tentang alur order hanya karena kata "koneksi". Entri dipertahankan hanya bila skor BM25-nya masih dalam rasio 0,55 dari yang terbaik.
+- **Tidak mengulang.** Server melacak entri yang sudah disuntikkan per sesi. Tanpa ini, hook yang berjalan di setiap pesan akan mengirim ulang hal yang sama dan biayanya melebihi mengirim semuanya sekali.
+- **Diam saat tidak relevan.** Sapaan seperti "ok lanjut ya" menghasilkan nol byte.
+
+**Pin.** Karena orientasi tidak memuat seluruh entri, `pinned` adalah cara menjamin sebuah fakta selalu ikut di awal sesi. Setel lewat tombol Pin di GUI.
+
+Prompt pengguna dikirim ke server memory untuk pemeringkatan. Server tidak menyimpannya — hanya id entri yang sudah dikirim, di memori proses, hilang saat restart.
+
 ## GUI admin
 
 Ada di `/ui` pada server yang sama, hanya untuk token ber-peran admin. Fungsinya: menjelajah dan mencari memory per repo, menyunting dan menghapus entri yang salah, melihat ADR dan lineage, membaca audit, serta mengelola anggota (buat token, rotasi, nonaktifkan, ubah peran).

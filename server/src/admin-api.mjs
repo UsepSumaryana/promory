@@ -77,10 +77,14 @@ export async function handleAdminApi(db, req, res, user, url) {
         why: b.why ?? row.why,
         type: b.type ?? row.type,
         confidence: b.confidence ?? row.confidence,
+        // pinned = entri yang selalu ikut di briefing awal sesi. Pada memory
+        // berskala ribuan entri, briefing hanya memuat peta + yang di-pin, jadi
+        // inilah satu-satunya cara menjamin sebuah fakta tidak terlewat.
+        pinned: b.pinned === undefined ? row.pinned : b.pinned ? 1 : 0,
       };
       try {
-        db.prepare('UPDATE entries SET title=?, body=?, why=?, type=?, confidence=?, updated_at=? WHERE id=?')
-          .run(next.title, next.body, next.why, next.type, next.confidence, new Date().toISOString(), id);
+        db.prepare('UPDATE entries SET title=?, body=?, why=?, type=?, confidence=?, pinned=?, updated_at=? WHERE id=?')
+          .run(next.title, next.body, next.why, next.type, next.confidence, next.pinned, new Date().toISOString(), id);
       } catch (err) {
         // Judul unik per repo+scope+branch; bentrok berarti sudah ada entri lain
         // dengan judul itu, dan menggabungkannya adalah keputusan manusia.

@@ -56,6 +56,14 @@ server {
         proxy_set_header Authorization $http_authorization;
     }
 
+    # Retrieval per-prompt (POST). Wajib diteruskan — tanpa ini hook
+    # UserPromptSubmit tidak pernah mendapat entri relevan.
+    location /relevant {
+        proxy_pass http://127.0.0.1:8787/relevant;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+    }
+
     location /health {
         proxy_pass http://127.0.0.1:8787/health;
     }

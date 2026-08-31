@@ -180,6 +180,7 @@ function renderEntries(host) {
           $('span', { class: 'chip', text: e.scope === 'shared' ? 'bersama' : `branch: ${e.branch}` }),
           $('span', { class: 'chip', text: e.type }),
           $('span', { class: 'chip', text: e.confidence }),
+          e.pinned ? $('span', { class: 'chip', text: '📌 selalu tampil' }) : null,
           $('span', { text: `oleh ${e.author}` }),
           $('span', { text: `diperbarui ${e.updated_at.slice(0, 10)}` }),
         ]),
@@ -187,6 +188,17 @@ function renderEntries(host) {
         e.why ? $('div', { class: 'muted', text: `Kenapa penting: ${e.why}` }) : null,
         $('div', { class: 'row', style: 'margin-top:9px' }, [
           $('button', { text: 'Sunting', onclick: () => editEntry(e) }),
+          // Pin = entri ini selalu ikut di briefing awal sesi. Pada memory
+          // berskala ribuan entri, briefing hanya memuat peta + yang di-pin.
+          $('button', {
+            text: e.pinned ? 'Lepas pin' : 'Pin',
+            onclick: async () => {
+              try {
+                await api(`/api/entries/${e.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: !e.pinned }) });
+                loadTab();
+              } catch (ex) { banner(ex.message); }
+            },
+          }),
           $('button', { class: 'danger', text: 'Hapus', onclick: () => deleteEntry(e) }),
         ]),
       ]),

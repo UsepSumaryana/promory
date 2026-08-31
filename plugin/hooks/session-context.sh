@@ -46,13 +46,13 @@ esc() { echo "$1" | sed 's/ /%20/g'; }
 # memicu pemotongan harness. Naikkan lewat PM_BRIEF_BUDGET kalau memory sebuah
 # repo sudah banyak dan terlalu banyak entri turun jadi judul saja — server
 # memberi tahu berapa yang tersisa, jadi angkanya bisa disetel berdasarkan itu.
-BUDGET="${PM_BRIEF_BUDGET:-6000}"
+BUDGET="${PM_BRIEF_BUDGET:-4000}"
 # Nilai non-numerik dari env akan merusak aritmetika di bawah; jatuhkan ke default.
-case "$BUDGET" in ''|*[!0-9]*) BUDGET=6000 ;; esac
+case "$BUDGET" in ''|*[!0-9]*) BUDGET=4000 ;; esac
 
 BRIEF="$(curl -sf --max-time 6 \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
-  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET" 2>/dev/null)" || exit 0
+  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET&mode=orientation" 2>/dev/null)" || exit 0
 [ -n "$BRIEF" ] || exit 0
 
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
@@ -69,12 +69,6 @@ BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
 
 cat <<EOF
 # Memory proyek — \`$REPO\` @ \`$BRANCH\`
-
-Ini yang sudah diketahui tim tentang repo ini, isinya lengkap dan siap dipakai.
-Jangan mengeksplorasi codebase dari nol untuk hal yang sudah tercatat di bawah,
-dan jangan memanggil \`memory_recall\` untuk isi yang sudah ada di sini. Yang
-tetap perlu diperiksa ke kode hanyalah path, nama fungsi, atau flag yang akan
-kamu ubah — sisanya adalah snapshot saat ditulis.
 
 $BRIEF
 

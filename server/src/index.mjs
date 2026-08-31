@@ -9,6 +9,25 @@ import { openDb, audit } from './db.mjs';
 import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
 import { buildRecall, buildBrief } from './recall.mjs';
+import { buildOrientation, buildRelevant, promptToFtsQuery } from './retrieve.mjs';
+
+/**
+ * Entri yang sudah disuntikkan ke tiap sesi, supaya prompt berikutnya tidak
+ * mengirim ulang hal yang sama. Disimpan di memori proses, bukan database:
+ * isinya tidak berharga setelah sesi berakhir, dan menyimpannya justru
+ * menambah data perilaku pengguna yang tidak perlu diarsipkan.
+ *
+ * Dibatasi supaya server yang hidup berminggu-minggu tidak menumpuk sesi mati.
+ */
+const SESSION_CAP = 500;
+const sentPerSession = new Map();
+function rememberSent(key, set) {
+  sentPerSession.delete(key);
+  sentPerSession.set(key, set); // set ulang = pindah ke akhir, jadi LRU
+  while (sentPerSession.size > SESSION_CAP) {
+    sentPerSession.delete(sentPerSession.keys().next().value);
+  }
+}
 
 const PORT = Number(process.env.PM_PORT ?? 8787);
 const HOST = process.env.PM_HOST ?? '127.0.0.1';
@@ -118,16 +137,38 @@ function buildServer() {
   server.registerTool(
     'memory_search',
     {
-      description: 'Cari entri memory pada sebuah repo berdasarkan kata kunci di judul atau isi.',
+      description:
+        'Cari entri memory pada sebuah repo. Diperingkat relevansi (BM25) lewat indeks full-text, bukan pencocokan substring — jadi frasa bebas seperti "koneksi database putus sendiri" bisa dipakai langsung.',
       inputSchema: z.object({ repo: z.string(), query: z.string(), limit: z.number().optional() }),
     },
     async ({ repo, query, limit = 20 }) => {
-      const like = `%${query}%`;
-      const rows = db
-        .prepare(
-          'SELECT id,scope,branch,type,title,confidence,author FROM entries WHERE repo=? AND (title LIKE ? OR body LIKE ?) ORDER BY updated_at DESC LIMIT ?',
-        )
-        .all(repo, like, like, limit);
+      const fts = promptToFtsQuery(query, { maxTerms: 16 });
+      let rows = [];
+      if (fts) {
+        try {
+          rows = db
+            .prepare(
+              `SELECT e.id,e.scope,e.branch,e.type,e.title,e.confidence,e.author
+                 FROM entries_fts JOIN entries e ON e.id = entries_fts.rowid
+                WHERE entries_fts MATCH ? AND e.repo = ?
+                ORDER BY bm25(entries_fts) LIMIT ?`,
+            )
+            .all(fts, repo, limit);
+        } catch {
+          rows = [];
+        }
+      }
+      // Jatuh ke LIKE kalau seluruh kata query tersaring habis sebagai stopword
+      // atau terlalu pendek — mis. pencarian satu kata "CTK" atau "env".
+      if (!rows.length) {
+        const like = `%${query}%`;
+        rows = db
+          .prepare(
+            `SELECT id,scope,branch,type,title,confidence,author FROM entries
+              WHERE repo=? AND (title LIKE ? OR body LIKE ?) ORDER BY updated_at DESC LIMIT ?`,
+          )
+          .all(repo, like, like, limit);
+      }
       if (!rows.length) return text(`Tidak ada entri yang cocok dengan '${query}'.`);
       return text(
         rows
@@ -280,6 +321,60 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Entri paling relevan dengan prompt pengguna, untuk UserPromptSubmit hook.
+  //
+  // Badan permintaan adalah stdin hook APA ADANYA. Hook cukup meneruskannya
+  // tanpa mengurai: mengurai JSON di shell POSIX tanpa jq itu rapuh, sementara
+  // di sini sudah ada parser yang benar.
+  if (url.pathname === '/relevant' && req.method === 'POST') {
+    let payload = {};
+    try {
+      const chunks = [];
+      let size = 0;
+      for await (const c of req) {
+        size += c.length;
+        if (size > 256 * 1024) break;
+        chunks.push(c);
+      }
+      payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('');
+      return;
+    }
+
+    const repo = url.searchParams.get('repo');
+    const branch = url.searchParams.get('branch');
+    const sessionKey = `${user.id}:${payload.session_id ?? 'tanpa-sesi'}`;
+    if (!repo || !branch || !payload.prompt) {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('');
+      return;
+    }
+
+    const inheritFrom = (url.searchParams.get('inherit') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const budget = Math.max(500, Math.min(12000, Number(url.searchParams.get('budget')) || 3000));
+
+    const already = sentPerSession.get(sessionKey) ?? new Set();
+    const { ids, text: body } = buildRelevant(db, {
+      repo,
+      branch,
+      inheritFrom,
+      prompt: payload.prompt,
+      exclude: already,
+      budget,
+    });
+    for (const id of ids) already.add(id);
+    rememberSent(sessionKey, already);
+
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-count': String(ids.length) });
+    res.end(body);
+    return;
+  }
+
   // Briefing teks polos untuk SessionStart hook. Terbuka untuk semua token yang
   // sah (bukan hanya admin) karena inilah jalur recall utama tiap anggota:
   // hook memanggilnya sendiri dan mencetak hasilnya, tanpa perlu model memanggil
@@ -298,11 +393,18 @@ const httpServer = createServer(async (req, res) => {
       .filter(Boolean);
     // mode=full hanya untuk diagnosa manual; hook selalu memakai indeks padat,
     // karena stdout hook yang besar dipotong harness dan isinya hilang separuh.
-    const full = url.searchParams.get('mode') === 'full';
     const budget = Math.max(1000, Math.min(20000, Number(url.searchParams.get('budget')) || 6000));
-    const { empty, text: body } = full
-      ? buildRecall(db, { repo, branch, inheritFrom })
-      : buildBrief(db, { repo, branch, inheritFrom, budget });
+    const mode = url.searchParams.get('mode') ?? 'orientation';
+    // orientation (default): peta ringkas, ukurannya tetap kecil berapa pun isi
+    //   memory — dipakai SessionStart, karena relevansi belum bisa dihitung.
+    // budget: briefing lengkap dipotong anggaran, cocok untuk memory kecil.
+    // full: tanpa batas, hanya untuk diagnosa manual.
+    const { empty, text: body } =
+      mode === 'full'
+        ? buildRecall(db, { repo, branch, inheritFrom })
+        : mode === 'budget'
+          ? buildBrief(db, { repo, branch, inheritFrom, budget })
+          : buildOrientation(db, { repo, branch, inheritFrom });
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(empty) });
     res.end(body);
     return;

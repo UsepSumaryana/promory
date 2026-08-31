@@ -92,6 +92,65 @@ export function openDb(path) {
       last_seen_at TEXT
     );
   `);
+
+  // --- migrasi bertahap, aman dijalankan berulang ---
+
+  // `pinned` menandai entri yang SELALU ikut di briefing awal sesi. Pada skala
+  // ribuan entri, briefing tidak mungkin memuat semuanya, jadi harus ada cara
+  // menyatakan "yang ini jangan sampai terlewat" tanpa bergantung pada relevansi
+  // kata kunci.
+  try {
+    db.exec('ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+  } catch {
+    // kolom sudah ada — abaikan
+  }
+
+  // FTS5 untuk pencarian berbasis relevansi (BM25). Tanpa ini, pencarian memakai
+  // LIKE '%kata%' yang memindai seluruh tabel dan tidak punya peringkat — masih
+  // memadai untuk belasan entri, tapi tidak untuk ribuan.
+  //
+  // Memakai external content table: isi tetap di `entries`, FTS hanya menyimpan
+  // indeksnya, jadi tidak ada duplikasi teks.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+      title, body, why,
+      content='entries',
+      content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS entries_fts_ins AFTER INSERT ON entries BEGIN
+      INSERT INTO entries_fts (rowid, title, body, why) VALUES (new.id, new.title, new.body, new.why);
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_fts_del AFTER DELETE ON entries BEGIN
+      INSERT INTO entries_fts (entries_fts, rowid, title, body, why) VALUES ('delete', old.id, old.title, old.body, old.why);
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_fts_upd AFTER UPDATE ON entries BEGIN
+      INSERT INTO entries_fts (entries_fts, rowid, title, body, why) VALUES ('delete', old.id, old.title, old.body, old.why);
+      INSERT INTO entries_fts (rowid, title, body, why) VALUES (new.id, new.title, new.body, new.why);
+    END;
+  `);
+
+  // Backfill untuk database yang sudah berisi sebelum FTS ada. Trigger di atas
+  // hanya menangkap perubahan setelah ini, jadi tanpa rebuild entri lama tidak
+  // akan pernah muncul di hasil pencarian.
+  //
+  // Penanda kemajuan disimpan di tabel `meta`, BUKAN dengan menghitung baris
+  // entries_fts. Pada FTS5 external content, `COUNT(*) FROM entries_fts`
+  // membaca tabel `entries`, jadi selalu sama dengan totalnya — penjaga versi
+  // pertama karena itu tidak pernah memicu rebuild dan indeksnya tetap kosong,
+  // sementara `MATCH` mengembalikan nol tanpa galat apa pun.
+  db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  const FTS_VERSION = '1'; // naikkan bila skema atau tokenizer FTS berubah
+  const total = db.prepare('SELECT COUNT(*) AS n FROM entries').get().n;
+  const marker = db.prepare("SELECT value FROM meta WHERE key='fts_state'").get()?.value;
+  const want = `${FTS_VERSION}:${total}`;
+  if (marker !== want) {
+    db.exec("INSERT INTO entries_fts (entries_fts) VALUES ('rebuild')");
+    db.prepare("INSERT INTO meta (key,value) VALUES ('fts_state',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(want);
+  }
+
   return db;
 }
 
