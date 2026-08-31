@@ -1,19 +1,21 @@
-# TLS wajib: token bearer dikirim di setiap permintaan, dan lewat HTTP polos
-# token itu terbaca siapa pun di jalur jaringan. Sertifikat lewat certbot.
+# Config awal, HTTP saja. JANGAN menambahkan blok 443 secara manual di sini.
+#
+# Kenapa: blok 443 harus menunjuk file sertifikat, sementara sertifikatnya baru
+# ada setelah certbot berhasil dijalankan — dan certbot butuh nginx yang bisa
+# start lebih dulu. Menulis blok 443 duluan membuat `nginx -t` gagal dengan
+# "cannot load certificate ... no such file", dan certbot tidak pernah jalan.
+#
+# Alur yang benar:
+#   1. ganti memory.example.com di bawah dengan domain Anda
+#   2. sudo nginx -t && sudo systemctl reload nginx
+#   3. sudo certbot --nginx -d <domain-anda>
+#
+# Certbot menyisipkan sendiri blok 443 lengkap dengan path sertifikat dan
+# pengalihan dari 80, memakai sintaks yang cocok untuk versi nginx Anda.
 
 server {
     listen 80;
     server_name memory.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    http2 on;
-    server_name memory.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/memory.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/memory.example.com/privkey.pem;
 
     location /mcp {
         proxy_pass http://127.0.0.1:8787/;
@@ -44,6 +46,14 @@ server {
         # menjangkau halaman ini mengurangi permukaan serangan tanpa biaya.
         # allow 10.0.0.0/8;
         # deny all;
+    }
+
+    # Briefing recall untuk SessionStart hook. Wajib diteruskan — tanpa ini
+    # hook tidak pernah mendapat memory dan sesi berjalan tanpa recall.
+    location /brief {
+        proxy_pass http://127.0.0.1:8787/brief;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
     }
 
     location /health {

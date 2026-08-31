@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { openDb, audit } from './db.mjs';
 import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
+import { buildRecall } from './recall.mjs';
 
 const PORT = Number(process.env.PM_PORT ?? 8787);
 const HOST = process.env.PM_HOST ?? '127.0.0.1';
@@ -71,60 +72,8 @@ function buildServer() {
         include_adr: z.boolean().optional().describe('Sertakan ADR (default true)'),
       }),
     },
-    async ({ repo, branch, inherit_from = [], include_adr = true }) => {
-      const shared = db
-        .prepare('SELECT * FROM entries WHERE repo=? AND scope=\'shared\' ORDER BY type, title')
-        .all(repo);
-      const branches = [branch, ...inherit_from];
-      const placeholders = branches.map(() => '?').join(',');
-      const scoped = db
-        .prepare(
-          `SELECT * FROM entries WHERE repo=? AND scope='branch' AND branch IN (${placeholders}) ORDER BY branch, title`,
-        )
-        .all(repo, ...branches);
-      const adrs = include_adr
-        ? db.prepare('SELECT * FROM adrs WHERE repo=? ORDER BY number').all(repo)
-        : [];
-      const lineage = db.prepare('SELECT * FROM lineage WHERE repo=? AND branch=?').get(repo, branch);
-
-      if (!shared.length && !scoped.length && !adrs.length) {
-        return text(
-          `Belum ada memory untuk repo '${repo}'. Jangan mengarang — eksplorasi seperti biasa, lalu simpan temuannya lewat memory_write di akhir tugas.`,
-        );
-      }
-
-      const fmt = (e) =>
-        `### ${e.title}\n[type: ${e.type} | confidence: ${e.confidence} | oleh: ${e.author} | diperbarui: ${e.updated_at.slice(0, 10)}${e.branch ? ` | branch: ${e.branch}` : ''}]\n${e.body}${e.why ? `\nKenapa penting: ${e.why}` : ''}`;
-
-      const out = [];
-      if (shared.length) out.push(`## Memory bersama (${shared.length})\n\n${shared.map(fmt).join('\n\n')}`);
-      const own = scoped.filter((e) => e.branch === branch);
-      const inherited = scoped.filter((e) => e.branch !== branch);
-      if (own.length) out.push(`## Branch '${branch}' (${own.length})\n\n${own.map(fmt).join('\n\n')}`);
-      if (inherited.length)
-        out.push(
-          `## Diwarisi dari branch lain (${inherited.length}) — kalah bila bertentangan dengan memory branch saat ini\n\n${inherited.map(fmt).join('\n\n')}`,
-        );
-      if (adrs.length)
-        out.push(
-          `## ADR (${adrs.length})\n\n` +
-            adrs
-              .map(
-                (a) =>
-                  `### ADR-${String(a.number).padStart(4, '0')} — ${a.title}\n[status: ${a.status} | oleh: ${a.author}]\nKonteks: ${a.context}\nKeputusan: ${a.decision}${a.alternatives ? `\nAlternatif ditolak: ${a.alternatives}` : ''}${a.consequences ? `\nKonsekuensi: ${a.consequences}` : ''}`,
-              )
-              .join('\n\n'),
-        );
-      if (lineage)
-        out.push(
-          `## Lineage tercatat\ninduk: ${lineage.parent_branch ?? '?'} | fork: ${lineage.fork_point ?? '?'}\nmerge masuk: ${lineage.merged_in ?? '-'}\nsudah termuat di: ${lineage.contained_by ?? '-'}${lineage.note ? `\ncatatan: ${lineage.note}` : ''}`,
-        );
-
-      out.push(
-        'Fakta di atas adalah snapshot saat ditulis. Verifikasi ulang apa pun yang menyebut path, fungsi, atau flag sebelum dipakai.',
-      );
-      return text(out.join('\n\n---\n\n'));
-    },
+    async ({ repo, branch, inherit_from = [], include_adr = true }) =>
+      text(buildRecall(db, { repo, branch, inheritFrom: inherit_from, includeAdr: include_adr }).text),
   );
 
   server.registerTool(
@@ -328,6 +277,28 @@ const httpServer = createServer(async (req, res) => {
   if (!user) {
     res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
     res.end(JSON.stringify({ error: 'token tidak dikenal atau sudah dinonaktifkan' }));
+    return;
+  }
+
+  // Briefing teks polos untuk SessionStart hook. Terbuka untuk semua token yang
+  // sah (bukan hanya admin) karena inilah jalur recall utama tiap anggota:
+  // hook memanggilnya sendiri dan mencetak hasilnya, tanpa perlu model memanggil
+  // Agent tool — yang di sebagian harness memang dilarang tanpa permintaan user.
+  if (url.pathname === '/brief' && req.method === 'GET') {
+    const repo = url.searchParams.get('repo');
+    const branch = url.searchParams.get('branch');
+    if (!repo || !branch) {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('parameter repo dan branch wajib');
+      return;
+    }
+    const inheritFrom = (url.searchParams.get('inherit') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const { empty, text: body } = buildRecall(db, { repo, branch, inheritFrom });
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(empty) });
+    res.end(body);
     return;
   }
 
