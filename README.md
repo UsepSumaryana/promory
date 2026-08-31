@@ -80,9 +80,21 @@ Semua hook diam total di direktori yang bukan repo git, saat `PM_MEMORY_*` tidak
 
 ## Identitas repo lintas anggota
 
-Slug repo diturunkan dari **URL remote**, bukan nama direktori, jadi dua orang yang meng-clone repo yang sama ke folder berbeda tetap menulis ke ruang memory yang sama. Normalisasi menutup semua cara URL yang sama bisa tertulis berbeda — skema `https`/`ssh`/`scp`, `user@`, nomor port, `/` atau `.git` di ujung, dan beda huruf besar-kecil — sementara path lengkap setelah host dipertahankan supaya dua repo bernama sama di subgrup berbeda tidak saling menimpa.
+Identitas kanonis sebuah repo adalah **commit root**-nya (`git rev-list --max-parents=0 HEAD`) — identik di setiap clone, tidak bergantung nama remote, nama folder, maupun ada-tidaknya remote. Server memetakan commit root ke satu slug kanonis, jadi dua anggota yang slug-nya berbeda tetap menulis ke ruang memory yang sama.
 
-Satu kasus yang tidak bisa ditangani: repo **tanpa remote sama sekali**. Di situ satu-satunya nama yang tersisa adalah nama folder, dan itu memang berbeda antar orang. Script menandainya lewat `repo_slug_source: fallback-nama-direktori` dan agent diinstruksikan memperingatkan bahwa memory tersebut tidak akan menyatu dengan rekan.
+Slug sendiri diturunkan dari URL remote dan dinormalisasi (skema, `user@`, port, `/` atau `.git` di ujung, huruf besar-kecil), dengan path lengkap setelah host dipertahankan supaya dua repo bernama sama di subgrup berbeda tidak menimpa satu sama lain. Slug tetap dipakai sebagai nama yang terbaca manusia.
+
+**Kenapa commit root, bukan slug saja.** Rancangan awal hanya memakai slug, dan itu gagal di lapangan: dua anggota tim mendapat slug berbeda untuk repo git yang sama — satu `reusable-business-service-mini-ticast` (remote lengkap terbaca), satu `business-service-mini-ticast` (jatuh ke nama folder). Memory keduanya terbelah tanpa ada yang menyadari, dan itu kegagalan paling merugikan dari sistem ini: tujuan utamanya justru menyatukan temuan.
+
+Batasnya: clone **shallow** (`--depth`) tidak punya commit root yang sebenarnya. Script menandainya dan server mengabaikan nilainya, jatuh kembali ke slug apa adanya.
+
+Repo yang sudah terbelah sebelum penyatuan ini ada dibereskan di VPS:
+
+```bash
+node src/admin.mjs merge-repo <slug-asal> <slug-tujuan> <commit-root>
+```
+
+Entri berpindah, ADR dinomori ulang di tujuan, dan judul yang bentrok **dilewati serta dilaporkan** — menggabungkan dua tulisan berbeda dengan judul sama adalah keputusan manusia.
 
 ## Retrieval dua tahap (untuk skala ribuan entri)
 

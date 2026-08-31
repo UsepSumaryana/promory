@@ -10,9 +10,11 @@
  *   node src/admin.mjs rotate <id>
  *   node src/admin.mjs disable <id>
  *   node src/admin.mjs enable <id>
+ *   node src/admin.mjs merge-repo <slug-asal> <slug-tujuan> [commit-root]
  */
 import { openDb, audit } from './db.mjs';
 import { createUser, rotateToken } from './auth.mjs';
+import { mergeRepo } from './identity.mjs';
 
 const db = openDb(process.env.PM_DB ?? './data/memory.db');
 const [cmd, arg] = process.argv.slice(2);
@@ -53,7 +55,27 @@ switch (cmd) {
     console.log(`${row.name} ${cmd === 'disable' ? 'dinonaktifkan' : 'diaktifkan'}.`);
     break;
   }
+  case 'merge-repo': {
+    // Membereskan repo yang memory-nya terbelah karena slug berbeda pada repo
+    // git yang sama. Commit root opsional: bila diberikan, tujuan sekaligus
+    // ditetapkan sebagai slug kanonis supaya tidak terbelah lagi.
+    const to = process.argv[4];
+    const root = process.argv[5];
+    if (!arg || !to) throw new Error('Pakai: node src/admin.mjs merge-repo <slug-asal> <slug-tujuan> [commit-root]');
+    const r = mergeRepo(db, { from: arg, to, rootCommit: root, actor: 'cli' });
+    console.log(`Dipindah ke '${to}': ${r.movedEntries} entri, ${r.movedAdrs} ADR, ${r.movedLineage} lineage.`);
+    if (r.skippedEntries.length) {
+      console.log(`
+Dilewati karena judulnya sudah ada di tujuan (${r.skippedEntries.length}) — periksa manual:`);
+      for (const t of r.skippedEntries) console.log(`  - ${t}`);
+    }
+    if (root) console.log(`
+Commit root ${root.slice(0, 10)} kini dipetakan ke '${to}'.`);
+    break;
+  }
   default:
-    console.log('Perintah: list | add <nama> [--admin] | rotate <id> | disable <id> | enable <id>');
+    console.log(
+      'Perintah: list | add <nama> [--admin] | rotate <id> | disable <id> | enable <id> | merge-repo <asal> <tujuan> [commit-root]',
+    );
 }
 db.close();

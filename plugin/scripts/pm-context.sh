@@ -52,6 +52,27 @@ echo "repo_slug: $REPO"
 echo "repo_slug_source: $SLUG_SOURCE"
 [ -n "$REMOTE_URL" ] && echo "remote_url: $REMOTE_URL"
 [ "$SLUG_SOURCE" = "fallback-nama-direktori" ] && echo "PERINGATAN: repo tanpa remote — slug diambil dari nama folder, jadi memory tidak akan menyatu dengan rekan yang memakai nama folder berbeda."
+# Identitas repo yang BENAR-BENAR stabil: commit root.
+#
+# Slug di atas diturunkan dari URL remote, dan itu ternyata tidak cukup. Dua
+# anggota tim bisa mendapat slug berbeda untuk repo git yang sama — satu punya
+# remote lengkap (grup/nama), satu jatuh ke nama folder karena remote-nya tidak
+# terbaca. Memory mereka lalu terbelah tanpa ada yang menyadari; persis yang
+# terjadi pada business-service-mini-ticast (2026-08-31).
+#
+# Commit root identik di semua clone: tidak bergantung nama remote, nama folder,
+# maupun ada-tidaknya remote. Server memakai ini untuk menyatukan slug yang
+# berbeda ke satu repo.
+#
+# Batasnya: clone shallow (--depth) tidak punya commit root yang sebenarnya, jadi
+# nilainya ikut ditandai dan server boleh mengabaikannya.
+ROOT_COMMIT="$(git rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -1)"
+SHALLOW="$(git rev-parse --is-shallow-repository 2>/dev/null)"
+if [ -n "$ROOT_COMMIT" ] && [ "$SHALLOW" != "true" ]; then
+  echo "repo_root_commit: $ROOT_COMMIT"
+else
+  echo "repo_root_commit: (tidak tersedia$([ "$SHALLOW" = "true" ] && echo ", clone shallow"))"
+fi
 echo "worktree: $ROOT"
 echo "branch: $BRANCH"
 echo "branch_slug: $BSLUG"

@@ -12,7 +12,7 @@ Kamu menyimpan temuan ke memory tim lewat tool MCP `memory_*` **secara langsung*
 sh "${CLAUDE_PLUGIN_ROOT}/scripts/pm-context.sh"
 ```
 
-Ambil `repo_slug` dan `branch` dari outputnya, dan pakai apa adanya sebagai argumen `repo` dan `branch`. Jangan mengarang atau menyesuaikan nilainya: slug diturunkan dari URL remote dan sudah dinormalisasi supaya semua anggota tim mendapat nilai yang sama berapa pun nama folder mereka. Mengubahnya membuat tulisanmu mendarat di ruang nama berbeda dan tidak pernah ditemukan rekan.
+Ambil `repo_slug`, `repo_root_commit`, dan `branch` dari outputnya. Pakai `repo_slug` dan `branch` apa adanya sebagai argumen `repo` dan `branch`, dan **selalu sertakan `root_commit`** bila `repo_root_commit` berisi sha — itu identitas repo yang stabil di semua clone, dan server memakainya untuk menyatukan slug yang berbeda pada repo git yang sama. Tanpa itu, tulisanmu bisa mendarat di ruang nama terpisah dari rekan yang slug-nya berbeda. Jangan mengarang atau menyesuaikan nilainya: slug diturunkan dari URL remote dan sudah dinormalisasi supaya semua anggota tim mendapat nilai yang sama berapa pun nama folder mereka. Mengubahnya membuat tulisanmu mendarat di ruang nama berbeda dan tidak pernah ditemukan rekan.
 
 Kalau `repo_slug_source` bernilai `fallback-nama-direktori`, repo ini tidak punya remote. Tetap simpan, tapi beri tahu pengguna bahwa memory-nya tidak akan menyatu dengan rekan yang memakai nama folder berbeda.
 

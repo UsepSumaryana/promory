@@ -24,6 +24,10 @@ CTX="$(sh "$(dirname "$0")/../scripts/pm-context.sh" 2>/dev/null)" || exit 0
 field() { echo "$CTX" | sed -n "s/^$1: //p" | head -1; }
 
 REPO="$(field repo_slug)"
+# Identitas stabil lintas clone; server memakainya untuk menyatukan slug yang
+# berbeda pada repo git yang sama.
+ROOTC="$(field repo_root_commit)"
+case "$ROOTC" in *[!0-9a-f]*|"") ROOTC="" ;; esac
 BRANCH="$(field branch)"
 [ -n "$REPO" ] && [ -n "$BRANCH" ] || exit 0
 
@@ -42,7 +46,7 @@ esc() { echo "$1" | sed 's/ /%20/g'; }
 OUT="$(curl -sf --max-time 5 -X POST --data-binary @- \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
   -H 'Content-Type: application/json' \
-  "$BASE/relevant?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET" \
+  "$BASE/relevant?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET&root=$ROOTC" \
   2>/dev/null)" || exit 0
 
 [ -n "$OUT" ] || exit 0

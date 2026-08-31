@@ -93,6 +93,18 @@ export function openDb(path) {
     );
   `);
 
+  // Pemetaan commit root -> slug kanonis. Slug diturunkan dari URL remote di
+  // sisi klien dan ternyata bisa berbeda antar-anggota untuk repo yang sama;
+  // commit root identik di semua clone, jadi dialah identitas yang dipakai
+  // untuk menyatukan.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS repo_identity (
+      root_commit    TEXT PRIMARY KEY,
+      canonical_slug TEXT NOT NULL,
+      created_at     TEXT NOT NULL
+    );
+  `);
+
   // --- migrasi bertahap, aman dijalankan berulang ---
 
   // `pinned` menandai entri yang SELALU ikut di briefing awal sesi. Pada skala

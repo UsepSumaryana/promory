@@ -10,6 +10,7 @@ import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
 import { buildRecall, buildBrief } from './recall.mjs';
 import { buildOrientation, buildRelevant, promptToFtsQuery } from './retrieve.mjs';
+import { resolveRepo } from './identity.mjs';
 
 /**
  * Entri yang sudah disuntikkan ke tiap sesi, supaya prompt berikutnya tidak
@@ -89,6 +90,15 @@ function assertNoSecret(...parts) {
   }
 }
 
+// Semua tool MCP menerima `root_commit` opsional. Model mengambilnya dari
+// pm-context.sh bersama slug; server memakainya untuk menyatukan slug yang
+// berbeda ke repo yang sama. Tanpa argumen itu perilakunya seperti sebelumnya.
+const rr = (repo, root) => resolveRepo(db, { slug: repo, rootCommit: root }).repo;
+const ROOT_ARG = z
+  .string()
+  .optional()
+  .describe('repo_root_commit dari pm-context.sh — identitas repo yang stabil di semua clone. Sertakan bila tersedia.');
+
 function buildServer() {
   const server = new McpServer({ name: 'project-memory', version: '1.0.0' });
 
@@ -105,10 +115,11 @@ function buildServer() {
           .optional()
           .describe('Branch induk dan branch yang di-merge masuk, memory-nya ikut diwarisi'),
         include_adr: z.boolean().optional().describe('Sertakan ADR (default true)'),
+        root_commit: ROOT_ARG,
       }),
     },
-    async ({ repo, branch, inherit_from = [], include_adr = true }) =>
-      text(buildRecall(db, { repo, branch, inheritFrom: inherit_from, includeAdr: include_adr }).text),
+    async ({ repo, branch, inherit_from = [], include_adr = true, root_commit }) =>
+      text(buildRecall(db, { repo: rr(repo, root_commit), branch, inheritFrom: inherit_from, includeAdr: include_adr }).text),
   );
 
   server.registerTool(
@@ -125,9 +136,11 @@ function buildServer() {
         body: z.string().describe('Fakta, 1-4 kalimat, sebut path file konkret'),
         why: z.string().optional().describe('Kenapa penting: apa yang jadi lebih cepat atau lebih aman'),
         confidence: z.enum(['confirmed', 'likely']).optional(),
+        root_commit: ROOT_ARG,
       }),
     },
-    async ({ repo, scope, branch, type, title, body, why, confidence = 'confirmed' }) => {
+    async ({ repo: repoArg, scope, branch, type, title, body, why, confidence = 'confirmed', root_commit }) => {
+      const repo = rr(repoArg, root_commit);
       if (scope === 'branch' && !branch) throw new Error("scope='branch' membutuhkan argumen branch.");
       assertNoSecret(title, body, why);
       const b = scope === 'branch' ? branch : null;
@@ -155,9 +168,10 @@ function buildServer() {
     {
       description:
         'Cari entri memory pada sebuah repo. Diperingkat relevansi (BM25) lewat indeks full-text, bukan pencocokan substring — jadi frasa bebas seperti "koneksi database putus sendiri" bisa dipakai langsung.',
-      inputSchema: z.object({ repo: z.string(), query: z.string(), limit: z.number().optional() }),
+      inputSchema: z.object({ repo: z.string(), query: z.string(), limit: z.number().optional(), root_commit: ROOT_ARG }),
     },
-    async ({ repo, query, limit = 20 }) => {
+    async ({ repo: repoArg, query, limit = 20, root_commit }) => {
+      const repo = rr(repoArg, root_commit);
       const fts = promptToFtsQuery(query, { maxTerms: 16 });
       let rows = [];
       if (fts) {
@@ -226,9 +240,11 @@ function buildServer() {
         scope: z.enum(['architecture', 'bispro', 'process', 'tooling']).optional(),
         branch: z.string().optional().describe('Branch asal keputusan'),
         supersedes: z.number().optional().describe('Nomor ADR yang digantikan — ADR lama TIDAK dihapus'),
+        root_commit: ROOT_ARG,
       }),
     },
-    async ({ repo, title, context, decision, alternatives, consequences, status = 'accepted', scope, branch, supersedes }) => {
+    async ({ repo: repoArg, title, context, decision, alternatives, consequences, status = 'accepted', scope, branch, supersedes, root_commit }) => {
+      const repo = rr(repoArg, root_commit);
       assertNoSecret(title, context, decision, alternatives, consequences);
       const max = db.prepare('SELECT MAX(number) AS n FROM adrs WHERE repo=?').get(repo);
       const number = (max?.n ?? 0) + 1;
@@ -257,9 +273,10 @@ function buildServer() {
     'adr_list',
     {
       description: 'Daftar ADR sebuah repo, opsional disaring berdasarkan status.',
-      inputSchema: z.object({ repo: z.string(), status: z.string().optional() }),
+      inputSchema: z.object({ repo: z.string(), status: z.string().optional(), root_commit: ROOT_ARG }),
     },
-    async ({ repo, status }) => {
+    async ({ repo: repoArg, status, root_commit }) => {
+      const repo = rr(repoArg, root_commit);
       const rows = status
         ? db.prepare('SELECT * FROM adrs WHERE repo=? AND status LIKE ? ORDER BY number').all(repo, `${status}%`)
         : db.prepare('SELECT * FROM adrs WHERE repo=? ORDER BY number').all(repo);
@@ -285,9 +302,11 @@ function buildServer() {
         merged_in: z.array(z.string()).optional(),
         contained_by: z.array(z.string()).optional(),
         note: z.string().optional().describe('Alasan koreksi bila tebakan script diubah'),
+        root_commit: ROOT_ARG,
       }),
     },
-    async ({ repo, branch, parent_branch, fork_point, merged_in, contained_by, note }) => {
+    async ({ repo: repoArg, branch, parent_branch, fork_point, merged_in, contained_by, note, root_commit }) => {
+      const repo = rr(repoArg, root_commit);
       db.prepare(
         `INSERT INTO lineage (repo,branch,parent_branch,fork_point,merged_in,contained_by,note,author,updated_at)
          VALUES (?,?,?,?,?,?,?,?,?)
@@ -359,7 +378,10 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    const repo = url.searchParams.get('repo');
+    const repo = resolveRepo(db, {
+      slug: url.searchParams.get('repo'),
+      rootCommit: url.searchParams.get('root'),
+    }).repo;
     const branch = url.searchParams.get('branch');
     const sessionKey = `${user.id}:${payload.session_id ?? 'tanpa-sesi'}`;
     if (!repo || !branch || !payload.prompt) {
@@ -411,7 +433,10 @@ const httpServer = createServer(async (req, res) => {
   // hook memanggilnya sendiri dan mencetak hasilnya, tanpa perlu model memanggil
   // Agent tool — yang di sebagian harness memang dilarang tanpa permintaan user.
   if (url.pathname === '/brief' && req.method === 'GET') {
-    const repo = url.searchParams.get('repo');
+    const repo = resolveRepo(db, {
+      slug: url.searchParams.get('repo'),
+      rootCommit: url.searchParams.get('root'),
+    }).repo;
     const branch = url.searchParams.get('branch');
     if (!repo || !branch) {
       res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });

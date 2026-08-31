@@ -24,6 +24,10 @@ CTX="$(sh "$(dirname "$0")/../scripts/pm-context.sh" 2>/dev/null)" || exit 0
 field() { echo "$CTX" | sed -n "s/^$1: //p" | head -1; }
 
 REPO="$(field repo_slug)"
+# Identitas stabil lintas clone; server memakainya untuk menyatukan slug yang
+# berbeda pada repo git yang sama.
+ROOTC="$(field repo_root_commit)"
+case "$ROOTC" in *[!0-9a-f]*|"") ROOTC="" ;; esac
 BRANCH="$(field branch)"
 [ -n "$REPO" ] && [ -n "$BRANCH" ] || exit 0
 
@@ -52,7 +56,7 @@ case "$BUDGET" in ''|*[!0-9]*) BUDGET=4000 ;; esac
 
 BRIEF="$(curl -sf --max-time 6 \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
-  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET&mode=orientation" 2>/dev/null)" || exit 0
+  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET&mode=orientation&root=$ROOTC" 2>/dev/null)" || exit 0
 [ -n "$BRIEF" ] || exit 0
 
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
