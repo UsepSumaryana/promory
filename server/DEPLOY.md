@@ -78,12 +78,15 @@ Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permi
 
 Lalu set dua environment variable di mesin masing-masing, dan restart sesi Claude Code:
 
-```bash
-export PM_MEMORY_URL=https://memory.example.com/mcp
-export PM_MEMORY_TOKEN=<token-pribadi>
+Di `~/.claude/settings.json` masing-masing:
+
+```json
+{ "env": { "PM_MEMORY_URL": "https://memory.example.com/mcp", "PM_MEMORY_TOKEN": "<token-pribadi>" } }
 ```
 
 `PM_MEMORY_TOKEN` adalah rahasia pribadi. Jangan menaruhnya di file yang di-commit, dan jangan membagikannya ke rekan — minta token sendiri.
+
+Untuk mengaktifkannya hanya di repo tertentu, taruh blok `env` yang sama di `.claude/settings.local.json` repo itu alih-alih di settings global, dan pastikan `.claude/` diabaikan git di sana. Lihat bagian "Aktif di workspace tertentu saja" di README.
 
 ## Backup
 

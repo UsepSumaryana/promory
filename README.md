@@ -4,8 +4,8 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 
 ## Yang dilakukan
 
-- **RECALL** di awal tugas: agent membaca memory repo + branch dari server, lalu memberi briefing padat (arsitektur, bispro, konvensi, jebakan, ADR yang mengikat) sebelum eksplorasi codebase dimulai.
-- **CAPTURE** di akhir tugas: temuan baru disaring dan dikirim ke server. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
+- **Baca otomatis, tanpa dipanggil.** Hook mengambil sendiri memory yang relevan dan menyuntikkannya ke konteks — tidak bergantung pada keputusan model, jadi tetap jalan di harness yang melarang pemanggilan Agent tool.
+- **Tulis atas inisiatif agent.** Skill `simpan-memory` menyaring temuan dan menyimpannya langsung tanpa meminta persetujuan, lalu melaporkan. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
 - **Sadar lineage branch**: mendeteksi branch induk, fork point, branch yang di-merge masuk, dan branch yang sudah memuat branch ini. Memory branch induk ikut terwarisi saat recall.
 - **ADR**: keputusan arsitektur yang belum terdokumentasi dicatat dengan alternatif yang ditolak dan konsekuensinya. Penomoran otomatis, dan keputusan yang dibatalkan ditandai superseded — tidak pernah dihapus.
 - **Atribusi dan audit**: tiap entri membawa nama penulisnya, dan setiap tulis/hapus tercatat di tabel audit.
@@ -27,25 +27,56 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 /plugin install project-memory@bakhija
 ```
 
-Lalu set dua environment variable dan restart sesi Claude Code:
+Lalu sediakan dua environment variable dan restart Claude Code. Cara paling sederhana, berlaku di semua repo — di `~/.claude/settings.json`:
 
-```bash
-export PM_MEMORY_URL=https://memory.example.com/mcp
-export PM_MEMORY_TOKEN=<token-pribadi-dari-admin>
+```json
+{ "env": { "PM_MEMORY_URL": "https://memory.example.com/mcp", "PM_MEMORY_TOKEN": "<token-pribadi>" } }
 ```
 
 Token bersifat pribadi — jangan di-commit, jangan dibagikan. Nama yang dipetakan ke token itulah yang muncul sebagai penulis tiap entri.
+
+### Aktif di workspace tertentu saja
+
+Plugin ini sengaja tidak berguna tanpa dua hal: `enabledPlugins` yang menyalakannya, dan `PM_MEMORY_*` yang memberinya kredensial. Kalau salah satu tidak ada, seluruh hook diam total — tidak ada briefing, tidak ada retrieval, tidak ada galat.
+
+Sifat itu dipakai untuk membatasi cakupannya. Nonaktifkan global sekali:
+
+```bash
+claude plugin disable project-memory@bakhija --scope user
+```
+
+Lalu di dalam tiap repo yang diinginkan:
+
+```bash
+claude plugin enable project-memory@bakhija --scope local
+```
+
+dan pindahkan env-nya dari settings global ke `.claude/settings.local.json` repo itu:
+
+```json
+{ "env": { "PM_MEMORY_URL": "https://memory.example.com/mcp", "PM_MEMORY_TOKEN": "<token-pribadi>" } }
+```
+
+**Pastikan `.claude/` diabaikan git di repo tersebut** — file itu memuat token.
+
+Dua lapis ini disengaja. `enabledPlugins` menentukan plugin dimuat atau tidak; `env` menentukan ke **server mana** workspace itu menulis. Begitu ada lebih dari satu server memory — misalnya satu internal dan satu untuk proyek klien — lapis kedua itulah yang mencegah memory nyasar ke tempat yang salah.
+
+Alternatif yang tidak bergantung pada presedensi `enabledPlugins` antar-scope: cabut dari scope user lalu `claude plugin install project-memory@bakhija --scope local` di tiap repo. Lebih pasti, tapi tiap repo perlu dipasang dan di-update sendiri.
 
 ## Isi plugin
 
 | Path | Fungsi |
 |---|---|
-| `plugin/agents/project-memory.md` | Definisi agent (mode RECALL & CAPTURE, aturan ADR) |
+| `plugin/hooks/session-context.sh` | SessionStart: mengambil orientasi dari server dan mencetaknya ke konteks |
+| `plugin/hooks/prompt-memory.sh` | UserPromptSubmit: meneruskan prompt ke server, menyuntikkan entri relevan |
+| `plugin/skills/simpan-memory/SKILL.md` | Skill penulisan — penyaringan, dedup, ADR, lineage |
 | `plugin/scripts/pm-context.sh` | Deteksi repo, branch, lineage — read-only, tidak pernah menulis ke repo |
-| `plugin/hooks/session-context.sh` | Menyuntikkan protokol recall/capture di awal sesi |
+| `plugin/agents/project-memory.md` | Agent opsional, untuk pekerjaan memory berat yang diminta pengguna sendiri |
 | `plugin/.mcp.json` | Sambungan ke server memory, URL dan token dari environment |
 
-Hook dipakai karena plugin tidak bisa menulis ke `CLAUDE.md` pengguna. Hook diam total di direktori yang bukan repo git.
+Hook melakukan pengambilan memory **sendiri**, bukan menyuruh model memanggil tool. Itu keputusan penting: sebagian harness Claude Code memasang aturan "jangan panggil Agent tool kecuali diminta pengguna" di level system prompt, yang selalu menang atas instruksi dari hook — rancangan lama karena itu tidak pernah jalan di sesi seperti itu, dan gagalnya senyap.
+
+Semua hook diam total di direktori yang bukan repo git, saat `PM_MEMORY_*` tidak diset, dan saat server tidak terjangkau.
 
 ## Identitas repo lintas anggota
 
@@ -125,11 +156,15 @@ Agent melapor bahwa memory tidak tersedia lalu melanjutkan tanpanya. Sesi tidak 
 
 ## Sebelum dipublikasikan
 
-URL repo sudah menunjuk ke https://github.com/UsepSumaryana/promory. Yang masih placeholder hanya **domain server memory** — ganti `memory.example.com` di `server/deploy/nginx.conf.example` dan default `PM_MEMORY_URL` di `plugin/.mcp.json` dengan domain VPS Anda.
+URL repo sudah menunjuk ke https://github.com/UsepSumaryana/promory. Yang masih placeholder hanya **domain server memory** — ganti `memory.example.com` di `server/deploy/nginx.conf.example`, di contoh env pada README ini, dan default `PM_MEMORY_URL` di `plugin/.mcp.json` dengan domain VPS Anda.
 
 ## Merilis perubahan
 
 Naikkan `version` di `plugin/.claude-plugin/plugin.json` **dan** di `.claude-plugin/marketplace.json`; keduanya harus cocok.
+
+Ini bukan formalitas. Plugin dipasang sebagai salinan di `~/.claude/plugins/cache/<marketplace>/<plugin>/<versi>/`, dan updater membandingkan nomor versi — bukan isi file. Mengubah hook tanpa menaikkan versi membuat `claude plugin update` melaporkan "sudah terbaru" sementara salinan di cache tetap versi lama, dan perbaikannya tidak pernah aktif.
+
+Mengubah nama marketplace juga mengubah id plugin (`project-memory@<marketplace>`). `plugin update` tidak bisa memindahkannya — pemasangan lama harus dicabut lalu dipasang ulang.
 
 Menguji secara lokal sebelum rilis:
 
