@@ -1,4 +1,4 @@
-# project-memory — plugin Claude Code internal Neuron
+# project-memory
 
 Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar codebase. Tujuannya memangkas waktu yang habis untuk membaca ulang codebase dan menemukan ulang bisnis proses di setiap sesi baru, dan membuat temuan satu orang langsung terpakai oleh yang lain.
 
@@ -24,7 +24,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 ```
 
 ```bash
-/plugin install project-memory@neuron
+/plugin install project-memory@bakhija
 ```
 
 Lalu set dua environment variable dan restart sesi Claude Code:

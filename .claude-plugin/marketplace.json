@@ -1,10 +1,10 @@
 {
-  "name": "neuron",
+  "name": "bakhija",
   "owner": {
-    "name": "Neuron"
+    "name": "bakhija"
   },
   "metadata": {
-    "description": "Plugin Claude Code internal Neuron"
+    "description": "Plugin Claude Code oleh bakhija"
   },
   "plugins": [
     {

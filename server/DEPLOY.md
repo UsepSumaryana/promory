@@ -73,7 +73,7 @@ Server sengaja hanya mendengarkan `127.0.0.1`. Token bearer ikut di setiap permi
 ```
 
 ```bash
-/plugin install project-memory@neuron
+/plugin install project-memory@bakhija
 ```
 
 Lalu set dua environment variable di mesin masing-masing, dan restart sesi Claude Code:
