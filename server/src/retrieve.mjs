@@ -168,10 +168,22 @@ export function buildRelevant(
   // tentang alur order hanya karena kata "koneksi" dan "nilai". BM25 di SQLite
   // bernilai negatif — makin negatif makin relevan — jadi entri dipertahankan
   // hanya bila skornya masih dalam rasio tertentu dari yang terbaik.
+  // Ambang dihitung terhadap skor terbaik dari SELURUH hasil, termasuk yang
+  // sudah pernah dikirim di sesi ini.
+  //
+  // Versi pertama menghitungnya setelah dedup, dan itu salah: entri teratas
+  // selalu lolos ambangnya sendiri (untuk skor negatif, best <= best*0,55
+  // selalu benar), jadi begitu kandidat terkuat tersaring karena sudah dikirim,
+  // kandidat kedua naik menjadi "terbaik" dan lolos tanpa benar-benar relevan.
+  // Akibatnya prompt lanjutan tentang topik yang sudah dijawab justru
+  // menyuntikkan tiga entri tak berkaitan — terjadi pada 2026-08-31.
+  //
+  // Dengan patokan dari hasil penuh, entri yang tersisa harus benar-benar
+  // sekuat kandidat terkuat untuk ikut. Kalau tidak, hook diam — dan diam
+  // adalah jawaban yang benar ketika topiknya sudah dibahas.
   const RATIO = 0.55;
-  const candidates = rows.filter((e) => !exclude.has(e.id));
-  const best = candidates.length ? candidates[0].rank : 0;
-  const relevant = candidates.filter((e) => e.rank <= best * RATIO);
+  const bestOverall = rows.length ? rows[0].rank : 0;
+  const relevant = rows.filter((e) => !exclude.has(e.id) && e.rank <= bestOverall * RATIO);
 
   const picked = [];
   const ids = [];
