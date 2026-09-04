@@ -40,8 +40,14 @@ export function promptToFtsQuery(prompt, { maxTerms = 12 } = {}) {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
   const unique = [...new Set(terms)].slice(0, maxTerms);
   if (!unique.length) return null;
-  // Setiap term diberi wildcard akhiran supaya "reservasi" menemukan
-  // "reservation"-nya juga tidak, tapi "config" menemukan "configuration".
+  // Setiap term diberi wildcard akhiran, jadi "config" ikut menemukan
+  // "configuration" dan "migrasi" menemukan "migrasinya".
+  //
+  // Yang TIDAK dijembatani wildcard: beda bahasa. "reservasi" tidak akan pernah
+  // menemukan "reservation", karena keduanya berbeda sejak karakter keenam.
+  // Entri yang ditulis dalam bahasa Inggris karena itu perlu memuat istilah
+  // Indonesianya di judul atau isi bila memang ingin ditemukan lewat pertanyaan
+  // berbahasa Indonesia — dan sebaliknya.
   return unique.map((t) => `"${t}"*`).join(' OR ');
 }
 
