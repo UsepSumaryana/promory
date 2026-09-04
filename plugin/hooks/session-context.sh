@@ -74,7 +74,11 @@ pm_is_html "$BRIEF" && exit 0
 # Batasnya mengikuti anggaran plus margin, bukan angka tetap. Versi bernilai
 # tetap 6000 justru memotong briefing saat PM_BRIEF_BUDGET dinaikkan - jaring
 # pengaman berubah jadi pengikat, dan knob-nya tidak berfungsi.
-BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
+# `head -c` hanya dipanggil kalau briefingnya memang kepanjangan; panjang
+# string sudah diketahui builtin, jadi jalur normalnya nol proses.
+if [ "${#BRIEF}" -gt "$((BUDGET + 1500))" ]; then
+  BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
+fi
 
 cat <<EOF
 # Memory proyek - \`$PM_REPO\` @ \`$PM_BRANCH\`

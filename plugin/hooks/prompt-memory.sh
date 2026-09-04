@@ -36,23 +36,36 @@ STATE="$(pm_state_file "$SESSION" active)"
 # cwd lebih dulu kalau memang repo, lalu repo yang diaktifkan lewat sentuhan
 # file. Dibatasi tiga: sesi yang menyentuh belasan repo tidak boleh mengubah
 # setiap prompt menjadi belasan permintaan.
-TARGETS="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+#
+# Daftar disusun dengan ekspansi parameter, bukan pipeline `printf | sed | head`.
+# Hook ini berjalan di setiap prompt, dan pada Windows satu proses saja ~70-140
+# ms; versi berpipeline menghabiskan ratusan milidetik hanya untuk menyusun
+# daftar berisi paling banyak tiga baris.
+NL='
+'
+TARGETS=""
+NTARGET=0
+add_target() {
+  [ -n "$1" ] || return 0
+  [ "$NTARGET" -ge 3 ] && return 0
+  case "$NL$TARGETS$NL" in *"$NL$1$NL"*) return 0 ;; esac
+  if [ -z "$TARGETS" ]; then TARGETS="$1"; else TARGETS="$TARGETS$NL$1"; fi
+  NTARGET=$((NTARGET + 1))
+}
+
+add_target "$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -f "$STATE" ]; then
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    case "$TARGETS" in *"$r"*) continue ;; esac
-    TARGETS="$TARGETS
-$r"
-  done < "$STATE"
+  while IFS= read -r r; do add_target "$r"; done < "$STATE"
 fi
-TARGETS="$(printf '%s\n' "$TARGETS" | sed '/^$/d' | head -3)"
 [ -n "$TARGETS" ] || exit 0
 
 BUDGET="$(pm_budget "${PM_RELEVANT_BUDGET:-}" 3000)"
-MULTI=0
-[ "$(printf '%s\n' "$TARGETS" | wc -l | tr -d ' ')" -gt 1 ] && MULTI=1
+LIMIT=$((BUDGET + 800))
 
-printf '%s\n' "$TARGETS" | while IFS= read -r ROOT; do
+# Loop dijalankan lewat heredoc, bukan pipe. Pipe akan menaruh loop di subshell
+# - dan itu sempat menyembunyikan bug: perubahan variabel di dalamnya tidak
+# terlihat dari luar. Heredoc juga tidak membutuhkan proses `printf` tambahan.
+while IFS= read -r ROOT; do
   [ -n "$ROOT" ] || continue
   pm_load_ctx "$ROOT" || continue
 
@@ -68,7 +81,17 @@ printf '%s\n' "$TARGETS" | while IFS= read -r ROOT; do
   # Kalau lebih dari satu repo ikut, tiap blok wajib diberi label. Tanpa itu
   # entri dua repo berbeda terbaca sebagai satu tumpukan, dan konvensi repo A
   # bisa diterapkan ke repo B.
-  [ "$MULTI" = "1" ] && printf 'Memory `%s` @ `%s`:\n' "$PM_REPO" "$PM_BRANCH"
-  printf '%s\n' "$OUT" | head -c "$((BUDGET + 800))"
+  [ "$NTARGET" -gt 1 ] && printf 'Memory `%s` @ `%s`:\n' "$PM_REPO" "$PM_BRANCH"
+
+  # `head -c` hanya dipanggil kalau memang kepanjangan; panjang string sendiri
+  # sudah diketahui builtin.
+  if [ "${#OUT}" -gt "$LIMIT" ]; then
+    printf '%s' "$OUT" | head -c "$LIMIT"
+    printf '\n'
+  else
+    printf '%s\n' "$OUT"
+  fi
   printf '\n'
-done
+done <<PM_TARGETS_EOF
+$TARGETS
+PM_TARGETS_EOF

@@ -90,7 +90,11 @@ pm_state_add "$ROOT" "$SEEN"
 [ -n "$BRIEF" ] || exit 0
 pm_state_add "$ROOT" "$ACTIVE"
 
-BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
+# `head -c` hanya dipanggil kalau briefingnya memang kepanjangan; panjang
+# string sudah diketahui builtin, jadi jalur normalnya nol proses.
+if [ "${#BRIEF}" -gt "$((BUDGET + 1500))" ]; then
+  BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
+fi
 
 NOTE="Memory proyek untuk \`$PM_REPO\` @ \`$PM_BRANCH\` (worktree: $ROOT).
 

@@ -32,10 +32,79 @@ pm_repo_root() {
   git -C "$_p" rev-parse --show-toplevel 2>/dev/null
 }
 
+# --- umur file ---------------------------------------------------------------
+# stat(1) berbeda antara GNU (Linux, git-bash) dan BSD (macOS); dua-duanya
+# dicoba, dan kalau tidak ada yang jalan cache dianggap basi (0 = 1970).
+pm_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 # --- identitas + lineage sebuah repo ----------------------------------------
 # Menyetel PM_REPO, PM_BRANCH, PM_ROOTC, PM_INHERIT untuk repo di $1.
+#
+# Hasilnya DI-CACHE, dan itu bukan optimasi kosmetik. pm-context.sh butuh ~4,4
+# detik pada repo dengan 17 ref, dan hampir seluruhnya bukan kerja git melainkan
+# biaya proses: dua loop lineage memanggil `git` 34-51 kali, dan di Windows satu
+# pemanggilan git saja ~90 ms.
+#
+#   loop parent_branch (17 x merge-base + rev-list) : 2533 ms
+#   loop contained_by  (17 x is-ancestor)           : 1148 ms
+#   tujuh perintah git tunggal lainnya              :  ~700 ms
+#
+# Tanpa cache, UserPromptSubmit membayar itu di SETIAP prompt - dan sejak memory
+# bisa aktif untuk beberapa repo sekaligus, sampai tiga kali lipat.
+#
+# Yang di-cache adalah keempat nilai yang SUDAH diparse, bukan teks mentah
+# pm-context.sh. Bedanya besar: menyimpan teks mentah tetap menyisakan sembilan
+# pipeline sed/sort/tr pada setiap cache hit, dan pada Windows itu sendiri sudah
+# ~800 ms. Cache berbentuk file yang bisa di-source membuat cache hit hanya
+# berharga satu pemanggilan git untuk kunci invalidasinya.
+#
+# Kunci cache: sha HEAD + nama branch, keduanya dari satu pemanggilan git. TTL
+# menutup sisa celahnya - `git fetch` bisa memunculkan ref baru yang mengubah
+# induk tanpa menggeser HEAD, dan mendeteksi itu butuh pembacaan ref yang
+# harganya justru sebanding dengan yang mau dihemat. Setel PM_CTX_TTL=0 untuk
+# mematikan cache sepenuhnya.
 pm_load_ctx() {
-  PM_CTX="$( cd "$1" 2>/dev/null && sh "$PM_SCRIPTS/pm-context.sh" 2>/dev/null )" || return 1
+  _root="$1"
+  _dir="${TMPDIR:-/tmp}/project-memory"
+  # `mkdir -p` pada direktori yang sudah ada tetap satu proses (~73 ms di
+  # Windows). Uji `-d` adalah builtin, jadi cache hit tidak membayarnya.
+  [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null
+
+  _ttl="${PM_CTX_TTL:-900}"
+  case "$_ttl" in ''|*[!0-9]*) _ttl=900 ;; esac
+
+  # Kunci invalidasi: sha HEAD + nama branch, dari SATU pemanggilan git. Nama
+  # branch harus ikut - `git checkout -b` membuat branch baru tanpa menggeser
+  # HEAD, dan kunci yang hanya berisi sha akan menyajikan branch yang lama.
+  #
+  # Kunci disimpan DI DALAM file cache, bukan di namanya. Menyusunnya jadi nama
+  # file yang aman menuntut pipeline `sed` (~106 ms), sementara membandingkan dua
+  # string setelah file di-source tidak berbiaya proses sama sekali. Nama file
+  # cukup memakai basename worktree dan panjang path-nya - keduanya builtin, dan
+  # kombinasi itu sudah memisahkan dua clone bernama sama.
+  _cache=""
+  if [ "$_ttl" -gt 0 ]; then
+    _head="$(git -C "$_root" rev-parse HEAD --abbrev-ref HEAD 2>/dev/null)"
+    [ -n "$_head" ] && _cache="$_dir/ctx-${_root##*/}-${#_root}"
+  fi
+
+  if [ -n "$_cache" ] && [ -f "$_cache" ]; then
+    # TTL diuji dengan satu `find`, bukan `date` + `stat` (dua proses, ~140 ms).
+    # Pembulatan ke atas supaya TTL di bawah satu menit tidak berubah menjadi
+    # `-mmin -0`, yang tidak pernah cocok dan mematikan cache tanpa disadari.
+    _mins=$(( (_ttl + 59) / 60 ))
+    if [ -n "$(find "$_cache" -mmin "-$_mins" 2>/dev/null)" ]; then
+      PM_REPO=""; PM_BRANCH=""; PM_ROOTC=""; PM_INHERIT=""; PM_CACHE_HEAD=""
+      . "$_cache" 2>/dev/null
+      if [ "$PM_CACHE_HEAD" = "$_head" ] && [ -n "$PM_REPO" ] && [ -n "$PM_BRANCH" ]; then
+        return 0
+      fi
+    fi
+  fi
+
+  PM_CTX="$( cd "$_root" 2>/dev/null && sh "$PM_SCRIPTS/pm-context.sh" 2>/dev/null )" || return 1
   [ -n "$PM_CTX" ] || return 1
 
   PM_REPO="$(printf '%s\n' "$PM_CTX" | sed -n 's/^repo_slug: //p' | head -1)"
@@ -53,6 +122,27 @@ pm_load_ctx() {
   _merged="$(printf '%s\n' "$PM_CTX" | sed -n "/^merged_in:/,/^[a-z_]*:/p" \
     | sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | sort -u | tr '\n' ',' | sed 's/,$//')"
   PM_INHERIT="$(printf '%s' "$_parent,$_merged" | sed 's/^,//; s/,$//')"
+
+  # Nilai yang mengandung kutip tunggal tidak bisa ditulis aman ke file yang
+  # akan di-source. Nama branch git boleh memuatnya, jadi kasus itu dilewati
+  # dari cache alih-alih menghasilkan file yang rusak saat di-source.
+  if [ -n "$_cache" ]; then
+    case "$PM_REPO$PM_BRANCH$PM_ROOTC$PM_INHERIT$_head" in
+      *"'"*) : ;;
+      *)
+        # Tulis ke file sementara lalu rename: dua hook bisa berjalan bersamaan,
+        # dan pembaca tidak boleh pernah men-source file setengah tertulis.
+        {
+          printf "PM_REPO='%s'\n" "$PM_REPO"
+          printf "PM_BRANCH='%s'\n" "$PM_BRANCH"
+          printf "PM_ROOTC='%s'\n" "$PM_ROOTC"
+          printf "PM_INHERIT='%s'\n" "$PM_INHERIT"
+          printf "PM_CACHE_HEAD='%s'\n" "$_head"
+        } > "$_cache.$$" 2>/dev/null &&
+          mv -f "$_cache.$$" "$_cache" 2>/dev/null || rm -f "$_cache.$$" 2>/dev/null
+        ;;
+    esac
+  fi
   return 0
 }
 
@@ -64,11 +154,24 @@ pm_ready() {
   [ -n "${PM_MEMORY_URL:-}" ] || return 1
   [ -n "${PM_MEMORY_TOKEN:-}" ] || return 1
   # URL bisa ditulis dengan atau tanpa akhiran /mcp; kupas supaya rute benar.
-  PM_BASE="$(printf '%s' "$PM_MEMORY_URL" | sed 's#/mcp/*$##; s#/*$##')"
+  #
+  # Dilakukan dengan ekspansi parameter, bukan `sed`. Fungsi ini dipanggil di
+  # setiap hook - termasuk PostToolUse yang berjalan pada setiap tool call - dan
+  # satu proses `sed` di Windows berharga ~70 ms. Di jalur sepanas ini, pipeline
+  # yang bisa diganti builtin memang harus diganti.
+  PM_BASE="$PM_MEMORY_URL"
+  while :; do case "$PM_BASE" in */) PM_BASE="${PM_BASE%/}" ;; *) break ;; esac; done
+  case "$PM_BASE" in */mcp) PM_BASE="${PM_BASE%/mcp}" ;; esac
+  while :; do case "$PM_BASE" in */) PM_BASE="${PM_BASE%/}" ;; *) break ;; esac; done
   [ -n "$PM_BASE" ]
 }
 
-pm_esc() { printf '%s' "$1" | sed 's/ /%20/g'; }
+pm_esc() {
+  case "$1" in
+    *' '*) printf '%s' "$1" | sed 's/ /%20/g' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # Anggaran non-numerik dari env akan merusak aritmetika; jatuhkan ke default.
 pm_budget() {
@@ -97,7 +200,7 @@ pm_state_file() {
   _kind="${2:-seen}"
   _sid="$(printf '%s' "$_sid" | sed 's#[^A-Za-z0-9._-]#-#g')"
   _dir="${TMPDIR:-/tmp}/project-memory"
-  mkdir -p "$_dir" 2>/dev/null
+  [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null
   printf '%s/%s-%s' "$_dir" "$_kind" "$_sid"
 }
 
