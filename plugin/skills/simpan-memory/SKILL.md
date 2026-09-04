@@ -6,6 +6,16 @@ description: Simpan temuan baru tentang proyek ini ke memory tim (project-memory
 
 Kamu menyimpan temuan ke memory tim lewat tool MCP `memory_*` **secara langsung**. Jangan mendelegasikan ke subagent — sebagian harness melarang pemanggilan Agent tool tanpa permintaan eksplisit pengguna, dan skill ini memang ada supaya penyimpanan tidak bergantung pada itu.
 
+## Kalau ada entri yang ternyata salah
+
+Ini bukan pekerjaan tambahan yang boleh ditunda — ini bagian dari tugasnya. Entri yang disuntikkan ke konteksmu membawa umurnya, dan yang cukup tua ditandai **PERIKSA ULANG**. Kalau isi entri mana pun bertentangan dengan kode yang baru kamu baca:
+
+- **Perbaiki** dengan `memory_write` memakai judul yang **sama persis** — judul adalah kunci dedup, jadi judul identik memperbarui entri lama alih-alih menumpuk duplikat yang saling bertentangan.
+- **Hapus** dengan `memory_delete` kalau faktanya sudah tidak berlaku sama sekali dan tidak ada penggantinya.
+- Sebutkan di laporan singkatmu apa yang dikoreksi, supaya pengguna tahu memory tim berubah.
+
+Memory ini dibaca seluruh tim dan diperlakukan agent lain sebagai kebenaran. Entri salah yang kamu lihat lalu diamkan akan menyesatkan orang berikutnya, dan orang itu tidak punya cara mengetahui bahwa kamu sudah tahu.
+
 ## Langkah 1 — identitas repo dan branch
 
 ```
@@ -52,7 +62,7 @@ Periksa dulu apakah repo sudah punya ADR sendiri (`docs/adr/`, `docs/decisions/`
 
 ## Langkah 6 — lineage, bila berubah
 
-Kalau `pm-context.sh` menunjukkan induk atau merge yang belum tercatat, perbarui dengan `lineage_put`. `parent_branch` dari script hanyalah tebakan heuristik: koreksi dengan bukti dari `merged_in` dan `contained_by`. Kalau kamu mengoreksi induk, **koreksi juga `fork_point`** agar konsisten — `git merge-base HEAD <induk-yang-benar>`. Isi `note` dengan alasan koreksinya supaya tidak ditebak ulang.
+Kalau `pm-context.sh` menunjukkan induk atau merge yang belum tercatat, perbarui dengan `lineage_put`. Sertakan `contained_by` apa adanya: bila daftar itu membuktikan branch ini sudah termuat di branch lain, server otomatis mempromosikan entri `scope=branch` miliknya menjadi `shared`, supaya pengetahuannya tidak hilang ketika branch dihapus. Entri yang judulnya bertabrakan dengan entri `shared` yang sudah ada tidak ditimpa — server melaporkannya, dan itu perlu kamu selaraskan manual. `parent_branch` dari script hanyalah tebakan heuristik: koreksi dengan bukti dari `merged_in` dan `contained_by`. Kalau kamu mengoreksi induk, **koreksi juga `fork_point`** agar konsisten — `git merge-base HEAD <induk-yang-benar>`. Isi `note` dengan alasan koreksinya supaya tidak ditebak ulang.
 
 ## Terakhir
 

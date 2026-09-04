@@ -33,6 +33,8 @@ sudo -u project-memory node src/admin.mjs add usep --admin
 
 Token tampil **sekali saja** — server hanya menyimpan hash SHA-256-nya. Anggota berikutnya dibuat lewat GUI.
 
+`PM_STALE_DAYS` (default 120) menentukan kapan entri mulai ditandai **PERIKSA ULANG** pada briefing. Penandanya sengaja hanya muncul pada entri yang benar-benar tua — peringatan yang menempel di semua entri akan diabaikan model, sama seperti pengingat yang muncul di setiap prompt berubah jadi wallpaper.
+
 ## 4. Jalankan sebagai service
 
 ```bash

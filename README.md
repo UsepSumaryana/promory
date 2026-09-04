@@ -7,7 +7,9 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 - **Baca otomatis, tanpa dipanggil.** Hook mengambil sendiri memory yang relevan dan menyuntikkannya ke konteks — tidak bergantung pada keputusan model, jadi tetap jalan di harness yang melarang pemanggilan Agent tool.
 - **Mengikuti file, bukan direktori sesi.** Memory sebuah repo aktif begitu ada filenya yang dibaca atau diubah — meski sesi dimulai di workspace payung yang berisi banyak repo, atau di repo yang sama sekali lain. Satu sesi boleh menyentuh beberapa repo; masing-masing dapat memory-nya sendiri, berlabel.
 - **Tulis atas inisiatif agent.** Skill `simpan-memory` menyaring temuan dan menyimpannya langsung tanpa meminta persetujuan, lalu melaporkan. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
-- **Sadar lineage branch**: mendeteksi branch induk, fork point, branch yang di-merge masuk, dan branch yang sudah memuat branch ini. Memory branch induk ikut terwarisi saat recall.
+- **Menandai memory yang mulai tua.** Tiap entri yang disuntikkan membawa umurnya, dan yang melewati `PM_STALE_DAYS` (default 120) ditandai **PERIKSA ULANG**. Agent diinstruksikan memperbaiki entri yang ternyata bertentangan dengan kode, bukan mendiamkannya.
+- **Mengukur pemakaiannya sendiri.** Setiap penyuntikan dicatat, jadi tab **Pemakaian** di GUI bisa menunjukkan entri mana yang tak pernah tertarik (kandidat hapus) dan mana yang tertarik terus (kandidat pin) — kurasi berbasis angka, bukan dugaan.
+- **Sadar lineage branch**: mendeteksi branch induk, fork point, branch yang di-merge masuk, dan branch yang sudah memuat branch ini. Memory branch induk ikut terwarisi saat recall. Begitu sebuah branch terbukti sudah termuat di branch lain, entri `scope=branch` miliknya dipromosikan menjadi `shared` — tanpa itu, pengetahuan yang lahir di branch fitur ikut hilang saat branch-nya dihapus.
 - **ADR**: keputusan arsitektur yang belum terdokumentasi dicatat dengan alternatif yang ditolak dan konsekuensinya. Penomoran otomatis, dan keputusan yang dibatalkan ditandai superseded — tidak pernah dihapus.
 - **Atribusi dan audit**: tiap entri membawa nama penulisnya, dan setiap tulis/hapus tercatat di tabel audit.
 
@@ -81,6 +83,8 @@ Hook melakukan pengambilan memory **sendiri**, bukan menyuruh model memanggil to
 
 Semua hook diam total saat `PM_MEMORY_*` tidak diset dan saat server tidak terjangkau.
 
+Identitas repo di-cache per `(worktree, sha HEAD, branch)` dengan TTL `PM_CTX_TTL` (default 900 detik). Tanpa itu, hook membayar `pm-context.sh` di setiap prompt — 4,4 detik pada repo dengan 17 ref, karena dua loop lineage-nya memanggil `git` 34–51 kali dan di Windows satu pemanggilan git saja ~90 ms. Terukur turun ke ~185 ms untuk pemanggilan setelah yang pertama.
+
 Direktori yang bukan repo git **tidak** lagi mematikan plugin. Itu dulu penyebab kegagalan yang paling membingungkan: ketiga hook dibuka dengan `git rev-parse --show-toplevel || exit 0`, jadi sesi yang dimulai di workspace payung — satu folder berisi belasan repo terpisah — tidak pernah mendapat memory sama sekali, tanpa satu pun pesan galat, padahal seluruh pekerjaannya berlangsung di dalam sub-repo yang memory-nya penuh. Sekarang cwd hanya salah satu petunjuk; yang menentukan adalah lokasi file yang disentuh.
 
 ## Identitas repo lintas anggota
@@ -152,6 +156,8 @@ Pemulihan darurat lewat shell VPS:
 ```bash
 node src/admin.mjs list | add <nama> --admin | rotate <id> | disable <id> | enable <id>
 ```
+
+Tab **Pemakaian** menjawab pertanyaan yang tidak bisa dijawab tabel `audit`: audit mencatat tulis dan hapus, bukan pemakaian. Yang ditampilkan adalah jumlah penyuntikan nyata per entri — entri dengan hit tinggi layak di-pin, dan entri yang belum pernah tertarik setelah beberapa minggu biasanya terlalu spesifik, judulnya tidak cocok dengan cara orang bertanya, atau memang tidak perlu ada. Angkanya dihitung dari entri yang benar-benar sampai ke konteks lewat hook, bukan dari pemanggilan tool.
 
 ## Tool MCP
 

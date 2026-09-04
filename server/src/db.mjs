@@ -152,6 +152,34 @@ export function openDb(path) {
   // membaca tabel `entries`, jadi selalu sama dengan totalnya — penjaga versi
   // pertama karena itu tidak pernah memicu rebuild dan indeksnya tetap kosong,
   // sementara `MATCH` mengembalikan nol tanpa galat apa pun.
+  // Statistik penyuntikan: berapa kali sebuah entri benar-benar sampai ke
+  // konteks seseorang, dan kapan terakhir.
+  //
+  // Tabel `audit` mencatat tulis dan hapus — bukan pemakaian. Akibatnya tiga
+  // pertanyaan kurasi yang paling menentukan tidak bisa dijawab sama sekali:
+  // entri mana yang TIDAK PERNAH tertarik (beban mati, kandidat hapus), mana
+  // yang tertarik terus-menerus (kandidat `pinned`), dan repo mana yang
+  // memory-nya sebenarnya tidak pernah aktif. Pada skala ribuan entri, itu
+  // bedanya antara store yang tajam dan store yang membengkak sambil semua
+  // orang menduga-duga.
+  //
+  // Bentuknya agregat, bukan satu baris per penyuntikan. Satu baris per entri
+  // berarti ukuran tabel dibatasi jumlah entri dan tidak pernah tumbuh sendiri,
+  // sementara hits + first_at + last_at sudah cukup menjawab ketiga pertanyaan
+  // di atas. Rangkaian waktu penuh akan lebih kaya, tapi harganya tabel yang
+  // tumbuh selamanya untuk pertanyaan yang belum ada.
+  //
+  // ON DELETE CASCADE: entri yang dihapus tidak boleh meninggalkan statistik
+  // yatim yang lalu ikut terhitung di ringkasan.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS retrieval_stats (
+      entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+      hits     INTEGER NOT NULL DEFAULT 0,
+      first_at TEXT NOT NULL,
+      last_at  TEXT NOT NULL
+    );
+  `);
+
   db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const FTS_VERSION = '1'; // naikkan bila skema atau tokenizer FTS berubah
   const total = db.prepare('SELECT COUNT(*) AS n FROM entries').get().n;
@@ -169,4 +197,34 @@ export function openDb(path) {
 export function audit(db, author, action, repo, detail) {
   db.prepare('INSERT INTO audit (at, author, action, repo, detail) VALUES (?,?,?,?,?)')
     .run(new Date().toISOString(), author, action, repo ?? null, detail ?? null);
+}
+
+/**
+ * Catat bahwa sekumpulan entri baru disuntikkan ke konteks seseorang.
+ *
+ * Dipanggil dari jalur `/relevant`, yang berjalan pada SETIAP prompt setiap
+ * anggota tim. Dua konsekuensi mengikat desainnya: harus murah (satu UPSERT per
+ * entri, dan entri per prompt dibatasi empat), dan TIDAK BOLEH melempar.
+ * Kegagalan pencatatan statistik yang menjatuhkan permintaan berarti seluruh tim
+ * kehilangan recall demi angka yang sifatnya hanya informatif.
+ */
+export function recordRetrievals(db, ids = []) {
+  if (!ids.length) return;
+  const at = new Date().toISOString();
+  try {
+    const up = db.prepare(`
+      INSERT INTO retrieval_stats (entry_id, hits, first_at, last_at) VALUES (?, 1, ?, ?)
+      ON CONFLICT(entry_id) DO UPDATE SET hits = hits + 1, last_at = excluded.last_at
+    `);
+    db.exec('BEGIN');
+    try {
+      for (const id of ids) up.run(id, at, at);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  } catch (err) {
+    console.error('[retrieval-stats]', err?.message ?? err);
+  }
 }

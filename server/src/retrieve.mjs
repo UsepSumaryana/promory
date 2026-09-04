@@ -15,6 +15,8 @@
  * anggaran habis, dan pada ribuan entri hal itu tidak bisa dipertahankan.
  */
 
+import { ageFlags } from './age.mjs';
+
 const STOPWORDS = new Set(
   // Indonesia + Inggris, kata yang mencocokkan hampir semua entri sehingga
   // justru merusak peringkat kalau ikut dicari.
@@ -59,7 +61,7 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
   const ph = branches.map(() => '?').join(',') || "''";
   const pinned = db
     .prepare(
-      `SELECT title, type, body, why, confidence, branch FROM entries
+      `SELECT title, type, body, why, confidence, branch, updated_at FROM entries
         WHERE repo=? AND pinned=1 AND (scope='shared' OR branch IN (${ph}))
         ORDER BY type, title`,
     )
@@ -94,7 +96,7 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
         pinned
           .map(
             (e) =>
-              `### ${e.title}\n_${e.type}${e.confidence === 'likely' ? ', belum pasti' : ''}${e.branch ? `, branch ${e.branch}` : ''}_\n${clamp(e.body, 500)}${e.why ? `\n**Kenapa penting:** ${clamp(e.why, 200)}` : ''}`,
+              `### ${e.title}\n_${[e.type, e.confidence === 'likely' ? 'belum pasti' : null, e.branch ? `branch ${e.branch}` : null, ...ageFlags(e.updated_at)].filter(Boolean).join(', ')}_\n${clamp(e.body, 500)}${e.why ? `\n**Kenapa penting:** ${clamp(e.why, 200)}` : ''}`,
           )
           .join('\n\n'),
     );
@@ -144,7 +146,7 @@ export function buildRelevant(
   try {
     rows = db
       .prepare(
-        `SELECT e.id, e.title, e.type, e.body, e.why, e.confidence, e.branch, e.scope,
+        `SELECT e.id, e.title, e.type, e.body, e.why, e.confidence, e.branch, e.scope, e.updated_at,
                 bm25(entries_fts) AS rank
            FROM entries_fts
            JOIN entries e ON e.id = entries_fts.rowid
@@ -193,8 +195,14 @@ export function buildRelevant(
   for (const e of relevant) {
     // Entri branch didahulukan atas entri bersama pada relevansi setara —
     // konteks branch saat ini lebih mungkin benar untuk pekerjaan sekarang.
+    const flags = [
+      e.type,
+      e.confidence === 'likely' ? 'belum pasti' : null,
+      e.branch && e.branch !== branch ? `dari branch ${e.branch}` : null,
+      ...ageFlags(e.updated_at),
+    ].filter(Boolean);
     const block =
-      `### ${e.title}\n_${e.type}${e.confidence === 'likely' ? ', belum pasti' : ''}${e.branch && e.branch !== branch ? `, dari branch ${e.branch}` : ''}_\n` +
+      `### ${e.title}\n_${flags.join(', ')}_\n` +
       `${clamp(e.body, 500)}${e.why ? `\n**Kenapa penting:** ${clamp(e.why, 200)}` : ''}`;
     if (used + block.length > budget) break;
     picked.push(block);
@@ -226,6 +234,17 @@ export function buildRelevant(
     'jangan menjawab "belum" hanya karena tidak ada tool call.\n\n' +
     'Pakai ini alih-alih mengeksplorasi codebase dari nol; verifikasi ke kode hanya untuk path, ' +
     'nama, atau flag yang akan kamu ubah.\n\n' +
+    // Umur entri ikut dicetak di header tiap blok, dan tanpa instruksi ini
+    // informasi itu tidak berguna: model akan melihat "5 bulan lalu" lalu tetap
+    // memakainya apa adanya. Memory bersama yang salah menyesatkan SEMUA orang,
+    // jadi menemukan entri yang sudah tidak benar adalah temuan yang wajib
+    // ditindak, bukan sekadar dicatat dalam hati untuk sesi ini saja.
+    'Entri bertanda **PERIKSA ULANG** sudah cukup tua untuk mungkin tidak akurat lagi. Kalau isi ' +
+    'entri mana pun ternyata bertentangan dengan kode yang kamu baca, jangan diam dan jangan ' +
+    'sekadar mengabaikannya: perbaiki entrinya lewat `/project-memory:simpan-memory` dengan judul ' +
+    'yang sama persis (judul sama = memperbarui, bukan menumpuk duplikat), atau hapus kalau memang ' +
+    'sudah tidak berlaku. Memory ini dibaca seluruh tim, jadi entri salah yang dibiarkan akan ' +
+    'menyesatkan orang berikutnya.\n\n' +
     picked.join('\n\n') +
     reminder;
 

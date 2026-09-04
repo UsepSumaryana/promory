@@ -136,6 +136,7 @@ function renderLogin(err) {
 /* ---------- tampilan utama ---------- */
 const TABS = [
   ['entries', 'Memory'],
+  ['usage', 'Pemakaian'],
   ['adrs', 'ADR'],
   ['lineage', 'Lineage'],
   ['audit', 'Audit'],
@@ -154,6 +155,10 @@ async function loadTab() {
       if (!state.repo) return host.replaceChildren($('div', { class: 'empty', text: 'Pilih repo di kiri.' }));
       state.data = await api(`/api/adrs?repo=${encodeURIComponent(state.repo)}`);
       renderAdrs(host);
+    } else if (state.tab === 'usage') {
+      if (!state.repo) return host.replaceChildren($('div', { class: 'empty', text: 'Pilih repo di kiri.' }));
+      state.data = await api(`/api/usage?repo=${encodeURIComponent(state.repo)}`);
+      renderUsage(host);
     } else if (state.tab === 'lineage') {
       state.data = await api(`/api/lineage?repo=${encodeURIComponent(state.repo || '')}`);
       renderLineage(host);
@@ -287,6 +292,60 @@ function renderAdrs(host) {
         a.consequences ? $('div', { class: 'muted', text: `Konsekuensi: ${a.consequences}` }) : null,
       ]),
     ),
+  );
+}
+
+function renderUsage(host) {
+  const d = state.data;
+  if (!d.total) return host.replaceChildren($('div', { class: 'empty', text: 'Belum ada entri untuk repo ini.' }));
+
+  // Ringkasan lebih dulu, tabel sesudahnya. Angka yang dicari saat mengurasi
+  // adalah "berapa yang tidak pernah terpakai" — kalau itu harus dihitung
+  // sendiri dari tabel, panel ini tidak akan dipakai.
+  const pct = d.total ? Math.round((d.used / d.total) * 100) : 0;
+  const summary = $('div', { class: 'row', style: 'gap:10px;margin-bottom:14px;flex-wrap:wrap' }, [
+    $('span', { class: 'chip', text: `${d.total} entri` }),
+    $('span', { class: 'chip', text: `${d.used} pernah dipakai (${pct}%)` }),
+    $('span', { class: 'chip', text: `${d.never} belum pernah` }),
+    $('span', { class: 'chip', text: `${d.hits} penyuntikan total` }),
+  ]);
+
+  const hint = $('div', {
+    class: 'muted',
+    style: 'font-size:12px;margin-bottom:10px',
+    text:
+      'Dihitung dari entri yang benar-benar sampai ke konteks seseorang lewat hook, bukan dari ' +
+      'pemanggilan tool. Entri dengan hit tinggi layak di-pin; yang belum pernah terpakai setelah ' +
+      'beberapa minggu biasanya terlalu spesifik, judulnya tidak cocok dengan cara orang bertanya, ' +
+      'atau memang tidak perlu ada.',
+  });
+
+  const rows = d.rows.map((r) =>
+    $('tr', {}, [
+      $('td', {}, [
+        $('span', { text: r.title }),
+        r.pinned ? $('span', { class: 'chip', style: 'margin-left:6px', text: 'pin' }) : null,
+      ]),
+      $('td', { text: r.type }),
+      $('td', { text: r.scope === 'branch' ? `branch ${r.branch || '?'}` : 'shared' }),
+      // Nol ditandai, bukan dibiarkan sebagai angka biasa di antara angka lain.
+      $('td', {
+        text: String(r.hits),
+        style: r.hits === 0 ? 'color:#b45309;font-weight:600' : '',
+      }),
+      $('td', { text: r.last_at ? r.last_at.replace('T', ' ').slice(0, 16) : 'belum pernah' }),
+      $('td', { text: (r.updated_at || '').slice(0, 10) }),
+    ]),
+  );
+
+  host.replaceChildren(
+    summary,
+    hint,
+    $('table', {}, [
+      $('thead', {}, $('tr', {}, ['judul', 'tipe', 'cakupan', 'hit', 'terakhir dipakai', 'diperbarui']
+        .map((h) => $('th', { text: h })))),
+      $('tbody', {}, rows),
+    ]),
   );
 }
 

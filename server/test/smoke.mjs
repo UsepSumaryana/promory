@@ -201,6 +201,71 @@ check('menonaktifkan member diizinkan', disabled.ok, `status ${disabled.status}`
 const revoked = await fetch(`${URL_}/api/me`, { headers: { authorization: `Bearer ${newUser.token}` } });
 check('token yang dinonaktifkan langsung ditolak (401)', revoked.status === 401, `status ${revoked.status}`);
 
+/* ---------- umur entri, promosi branch, statistik pemakaian ---------- */
+
+// Umur entri harus sampai ke briefing. Tanpa ini, entri berumur setengah tahun
+// tampak setara dengan yang ditulis kemarin, padahal teks suntikannya menyuruh
+// model memakai memory alih-alih membaca kode.
+const briefAge = await fetch(`${URL_}/brief?repo=demo-repo&branch=fitur-x&mode=budget&budget=6000`, {
+  headers: { authorization: `Bearer ${TOKEN}` },
+});
+const briefAgeBody = await briefAge.text();
+check('briefing mencantumkan umur entri', /diperbarui (hari ini|kemarin|\d+ (hari|bulan|tahun) lalu|lebih dari setahun lalu)/.test(briefAgeBody), briefAgeBody.slice(0, 120));
+
+// Promosi entri branch yang sudah ter-merge. Dibuat entri baru khusus supaya
+// tidak bergantung pada sisa keadaan dari pemeriksaan sebelumnya.
+await call('memory_write', {
+  repo: 'demo-repo',
+  scope: 'branch',
+  branch: 'cabang-selesai',
+  type: 'gotcha',
+  title: 'Temuan di cabang yang sudah merged',
+  body: 'Fakta yang lahir saat mengerjakan fitur di cabang ini.',
+  why: 'Kalau tidak dipromosikan, hilang begitu cabangnya dihapus.',
+});
+
+// origin/<branch> BUKAN bukti merge — itu hanya ref pelacak remote dari branch
+// yang sama. Kalau filter ini rusak, setiap branch yang pernah di-push akan
+// langsung dipromosikan.
+const noPromote = await call('lineage_put', {
+  repo: 'demo-repo',
+  branch: 'cabang-selesai',
+  parent_branch: 'induk',
+  contained_by: ['origin/cabang-selesai'],
+});
+check('origin/<branch> tidak memicu promosi', !out(noPromote).includes('dipromosikan'), out(noPromote));
+
+const promoted = await call('lineage_put', {
+  repo: 'demo-repo',
+  branch: 'cabang-selesai',
+  parent_branch: 'induk',
+  contained_by: ['origin/cabang-selesai', 'induk'],
+});
+check('branch yang termuat di induk mempromosikan entrinya', out(promoted).includes('dipromosikan'), out(promoted));
+
+const afterPromote = await (await adminFetch('/api/entries?repo=demo-repo')).json();
+const movedEntry = afterPromote.find((e) => e.title === 'Temuan di cabang yang sudah merged');
+check('entri yang dipromosikan jadi shared tanpa branch', movedEntry?.scope === 'shared' && !movedEntry?.branch, JSON.stringify({ scope: movedEntry?.scope, branch: movedEntry?.branch }));
+
+// Statistik pemakaian. /relevant dipanggil dua kali dengan sesi berbeda: server
+// menyaring entri yang sudah dikirim PER SESI, jadi dua sesi berbeda harus
+// menghasilkan dua hit untuk entri yang sama.
+const relevantCall = (session, prompt) =>
+  fetch(`${URL_}/relevant?repo=demo-repo&branch=fitur-x&budget=3000`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: session, prompt }),
+  }).then((r) => r.text());
+
+await relevantCall('smoke-a', 'ceritakan soal Judul uji dan isinya');
+await relevantCall('smoke-b', 'ceritakan soal Judul uji dan isinya');
+
+const usage = await (await adminFetch('/api/usage?repo=demo-repo')).json();
+check('GET /api/usage meringkas pemakaian', typeof usage.total === 'number' && Array.isArray(usage.rows), JSON.stringify({ total: usage.total, never: usage.never, hits: usage.hits }));
+const usedRow = usage.rows.find((r) => r.hits > 0);
+check('penyuntikan tercatat sebagai hit', !!usedRow && !!usedRow.last_at, JSON.stringify(usedRow ?? null));
+check('entri yang belum pernah tertarik tetap terdaftar', usage.rows.some((r) => r.hits === 0), `never=${usage.never}`);
+
 const audit = await (await adminFetch('/api/audit?limit=10')).json();
 check('audit mencatat pembuatan pengguna', audit.some((a) => a.action === 'create-user'), audit.map((a) => a.action).join(','));
 

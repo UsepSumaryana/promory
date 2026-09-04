@@ -5,12 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import { openDb, audit } from './db.mjs';
+import { openDb, audit, recordRetrievals } from './db.mjs';
 import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
 import { buildRecall, buildBrief } from './recall.mjs';
 import { buildOrientation, buildRelevant, promptToFtsQuery } from './retrieve.mjs';
 import { resolveRepo } from './identity.mjs';
+import { mergeTargets, promoteMergedBranch } from './promote.mjs';
 
 /**
  * Entri yang sudah disuntikkan ke tiap sesi, supaya prompt berikutnya tidak
@@ -293,7 +294,7 @@ function buildServer() {
     'lineage_put',
     {
       description:
-        'Simpan lineage branch hasil pm-context.sh setelah dikoreksi. Menimpa catatan lineage sebelumnya untuk branch itu.',
+        'Simpan lineage branch hasil pm-context.sh setelah dikoreksi. Menimpa catatan lineage sebelumnya untuk branch itu. Bila contained_by membuktikan branch ini sudah ter-merge ke branch lain, entri scope=branch miliknya otomatis dipromosikan menjadi shared supaya tidak hilang saat branch dihapus; setel promote:false untuk melewatinya.',
       inputSchema: z.object({
         repo: z.string(),
         branch: z.string(),
@@ -302,10 +303,16 @@ function buildServer() {
         merged_in: z.array(z.string()).optional(),
         contained_by: z.array(z.string()).optional(),
         note: z.string().optional().describe('Alasan koreksi bila tebakan script diubah'),
+        promote: z
+          .boolean()
+          .optional()
+          .describe(
+            'Default true. Setel false hanya bila entri branch ini memang harus tetap terbatas di branch-nya.',
+          ),
         root_commit: ROOT_ARG,
       }),
     },
-    async ({ repo: repoArg, branch, parent_branch, fork_point, merged_in, contained_by, note, root_commit }) => {
+    async ({ repo: repoArg, branch, parent_branch, fork_point, merged_in, contained_by, note, promote, root_commit }) => {
       const repo = rr(repoArg, root_commit);
       db.prepare(
         `INSERT INTO lineage (repo,branch,parent_branch,fork_point,merged_in,contained_by,note,author,updated_at)
@@ -316,7 +323,33 @@ function buildServer() {
            note=excluded.note, author=excluded.author, updated_at=excluded.updated_at`,
       ).run(repo, branch, parent_branch ?? null, fork_point ?? null, (merged_in ?? []).join('; ') || null, (contained_by ?? []).join('; ') || null, note ?? null, author(), now());
       audit(db, author(), 'put-lineage', repo, branch);
-      return text(`Lineage '${branch}' tersimpan (induk: ${parent_branch ?? '?'}).`);
+
+      // Entri branch yang pekerjaannya sudah ter-merge dipromosikan di sini,
+      // dan bukan di tempat lain, karena inilah satu-satunya titik di mana
+      // `contained_by` sampai ke server. Tanpa ini, perhitungan 1,1 detik di
+      // pm-context.sh hanya berakhir sebagai teks yang dibaca sekali.
+      const lines = [`Lineage '${branch}' tersimpan (induk: ${parent_branch ?? '?'}).`];
+      const targets = promote === false ? [] : mergeTargets(branch, contained_by ?? []);
+      if (targets.length) {
+        const { promoted, conflicts } = promoteMergedBranch(db, { repo, branch, into: targets[0] });
+        if (promoted.length) {
+          audit(db, author(), 'promote-branch', repo, `${branch} -> shared: ${promoted.join('; ')}`);
+          lines.push(
+            `Branch ini sudah termuat di ${targets.join(', ')}, jadi ${promoted.length} entri ` +
+              `scope=branch dipromosikan menjadi shared supaya tidak hilang saat branch dihapus: ` +
+              promoted.map((t) => `"${t}"`).join(', ') + '.',
+          );
+        }
+        if (conflicts.length) {
+          // Tabrakan judul TIDAK ditimpa otomatis; lihat promote.mjs. Yang bisa
+          // dilakukan di sini hanya memastikan manusia mengetahuinya.
+          lines.push(
+            `${conflicts.length} entri tidak dipromosikan karena sudah ada entri shared berjudul sama — ` +
+              `perlu diselaraskan manual: ` + conflicts.map((t) => `"${t}"`).join(', ') + '.',
+          );
+        }
+      }
+      return text(lines.join(' '));
     },
   );
 
@@ -422,6 +455,10 @@ const httpServer = createServer(async (req, res) => {
       console.error('[relevant]', err?.stack ?? err);
     }
     for (const id of ids) st.sent.add(id);
+    // Dicatat di sini, bukan di dalam buildRelevant: yang layak dihitung sebagai
+    // "dipakai" adalah entri yang benar-benar dikirim ke hook, bukan yang lolos
+    // pemeringkatan lalu terpotong anggaran.
+    recordRetrievals(db, ids);
 
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-count': String(ids.length) });
     res.end(body);

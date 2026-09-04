@@ -5,6 +5,8 @@
  *   - tool MCP `memory_recall`, untuk permintaan detail -> buildRecall
  */
 
+import { ageFlags } from './age.mjs';
+
 /**
  * Briefing untuk SessionStart hook: bentuk LENGKAP, dibatasi anggaran byte.
  *
@@ -36,7 +38,7 @@ export function buildBrief(db, { repo, branch, inheritFrom = [], budget = 6000 }
     return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
   };
 
-  const cols = 'branch,type,title,body,why,confidence';
+  const cols = 'branch,type,title,body,why,confidence,updated_at';
   const shared = db
     .prepare(`SELECT ${cols} FROM entries WHERE repo=? AND scope='shared' ORDER BY type, title`)
     .all(repo);
@@ -79,6 +81,7 @@ export function buildBrief(db, { repo, branch, inheritFrom = [], budget = 6000 }
       e.type,
       e.confidence === 'likely' ? 'belum pasti' : null,
       e.branch && e.branch !== branch ? `dari branch ${e.branch}` : null,
+      ...ageFlags(e.updated_at),
     ]
       .filter(Boolean)
       .join(', ');

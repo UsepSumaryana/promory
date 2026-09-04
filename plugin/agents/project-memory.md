@@ -68,7 +68,7 @@ Lalu tulis dengan `memory_write`:
 
 Kalau menemukan memory lama yang ternyata salah, hapus dengan `memory_delete` beserta alasannya. Jangan biarkan dua fakta bertentangan hidup berdampingan — orang lain akan memakai yang salah.
 
-Perbarui lineage dengan `lineage_put` bila `pm-context.sh` menunjukkan induk atau merge yang belum tercatat. `parent_branch` dari script hanyalah tebakan: koreksi dengan bukti dari `merged_in` dan `contained_by`, dan kalau pemanggil menyebutkan induk sebenarnya, itu yang menang. Isi `note` dengan alasan koreksinya supaya tidak ditebak ulang.
+Perbarui lineage dengan `lineage_put` bila `pm-context.sh` menunjukkan induk atau merge yang belum tercatat, dan sertakan `contained_by` apa adanya — server memakainya untuk mempromosikan entri `scope=branch` dari branch yang sudah ter-merge menjadi `shared`, supaya tidak jadi orphan saat branch dihapus. `parent_branch` dari script hanyalah tebakan: koreksi dengan bukti dari `merged_in` dan `contained_by`, dan kalau pemanggil menyebutkan induk sebenarnya, itu yang menang. Isi `note` dengan alasan koreksinya supaya tidak ditebak ulang.
 
 ### ADR
 

@@ -138,6 +138,35 @@ export async function handleAdminApi(db, req, res, user, url) {
     return json(res, 200, db.prepare('SELECT * FROM lineage WHERE repo=? ORDER BY branch').all(repo));
   }
 
+  // Ringkasan pemakaian: entri mana yang benar-benar sampai ke konteks orang.
+  //
+  // Satu query untuk semuanya, dengan LEFT JOIN — entri yang belum pernah
+  // tertarik TIDAK punya baris di retrieval_stats, dan justru entri itulah yang
+  // paling ingin dilihat. INNER JOIN akan menyembunyikannya, yang berarti panel
+  // ini kehilangan separuh gunanya.
+  if (p === '/api/usage' && m === 'GET') {
+    const repo = q.get('repo');
+    if (!repo) return json(res, 400, { error: 'parameter repo wajib' });
+    const rows = db
+      .prepare(
+        `SELECT e.id, e.title, e.type, e.scope, e.branch, e.pinned, e.updated_at,
+                IFNULL(s.hits, 0) AS hits, s.last_at
+           FROM entries e
+           LEFT JOIN retrieval_stats s ON s.entry_id = e.id
+          WHERE e.repo = ?
+          ORDER BY hits DESC, e.updated_at DESC`,
+      )
+      .all(repo);
+    const never = rows.filter((r) => r.hits === 0).length;
+    return json(res, 200, {
+      total: rows.length,
+      never,
+      used: rows.length - never,
+      hits: rows.reduce((a, r) => a + r.hits, 0),
+      rows,
+    });
+  }
+
   if (p === '/api/audit' && m === 'GET') {
     return json(
       res,
