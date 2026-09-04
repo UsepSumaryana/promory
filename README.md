@@ -5,6 +5,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 ## Yang dilakukan
 
 - **Baca otomatis, tanpa dipanggil.** Hook mengambil sendiri memory yang relevan dan menyuntikkannya ke konteks — tidak bergantung pada keputusan model, jadi tetap jalan di harness yang melarang pemanggilan Agent tool.
+- **Mengikuti file, bukan direktori sesi.** Memory sebuah repo aktif begitu ada filenya yang dibaca atau diubah — meski sesi dimulai di workspace payung yang berisi banyak repo, atau di repo yang sama sekali lain. Satu sesi boleh menyentuh beberapa repo; masing-masing dapat memory-nya sendiri, berlabel.
 - **Tulis atas inisiatif agent.** Skill `simpan-memory` menyaring temuan dan menyimpannya langsung tanpa meminta persetujuan, lalu melaporkan. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
 - **Sadar lineage branch**: mendeteksi branch induk, fork point, branch yang di-merge masuk, dan branch yang sudah memuat branch ini. Memory branch induk ikut terwarisi saat recall.
 - **ADR**: keputusan arsitektur yang belum terdokumentasi dicatat dengan alternatif yang ditolak dan konsekuensinya. Penomoran otomatis, dan keputusan yang dibatalkan ditandai superseded — tidak pernah dihapus.
@@ -69,6 +70,8 @@ Alternatif yang tidak bergantung pada presedensi `enabledPlugins` antar-scope: c
 |---|---|
 | `plugin/hooks/session-context.sh` | SessionStart: mengambil orientasi dari server dan mencetaknya ke konteks |
 | `plugin/hooks/prompt-memory.sh` | UserPromptSubmit: meneruskan prompt ke server, menyuntikkan entri relevan |
+| `plugin/hooks/touch-memory.sh` | PostToolUse: mengaktifkan memory repo tempat file yang baru disentuh berada |
+| `plugin/scripts/pm-common.sh` | Logika bersama ketiga hook — resolusi repo dari path, lineage, state per sesi |
 | `plugin/skills/simpan-memory/SKILL.md` | Skill penulisan — penyaringan, dedup, ADR, lineage |
 | `plugin/scripts/pm-context.sh` | Deteksi repo, branch, lineage — read-only, tidak pernah menulis ke repo |
 | `plugin/agents/project-memory.md` | Agent opsional, untuk pekerjaan memory berat yang diminta pengguna sendiri |
@@ -76,7 +79,9 @@ Alternatif yang tidak bergantung pada presedensi `enabledPlugins` antar-scope: c
 
 Hook melakukan pengambilan memory **sendiri**, bukan menyuruh model memanggil tool. Itu keputusan penting: sebagian harness Claude Code memasang aturan "jangan panggil Agent tool kecuali diminta pengguna" di level system prompt, yang selalu menang atas instruksi dari hook — rancangan lama karena itu tidak pernah jalan di sesi seperti itu, dan gagalnya senyap.
 
-Semua hook diam total di direktori yang bukan repo git, saat `PM_MEMORY_*` tidak diset, dan saat server tidak terjangkau.
+Semua hook diam total saat `PM_MEMORY_*` tidak diset dan saat server tidak terjangkau.
+
+Direktori yang bukan repo git **tidak** lagi mematikan plugin. Itu dulu penyebab kegagalan yang paling membingungkan: ketiga hook dibuka dengan `git rev-parse --show-toplevel || exit 0`, jadi sesi yang dimulai di workspace payung — satu folder berisi belasan repo terpisah — tidak pernah mendapat memory sama sekali, tanpa satu pun pesan galat, padahal seluruh pekerjaannya berlangsung di dalam sub-repo yang memory-nya penuh. Sekarang cwd hanya salah satu petunjuk; yang menentukan adalah lokasi file yang disentuh.
 
 ## Identitas repo lintas anggota
 
@@ -96,11 +101,15 @@ node src/admin.mjs merge-repo <slug-asal> <slug-tujuan> <commit-root>
 
 Entri berpindah, ADR dinomori ulang di tujuan, dan judul yang bentrok **dilewati serta dilaporkan** — menggabungkan dua tulisan berbeda dengan judul sama adalah keputusan manusia.
 
-## Retrieval dua tahap (untuk skala ribuan entri)
+## Retrieval tiga tahap (untuk skala ribuan entri)
 
 **Tahap 1 — orientasi, di awal sesi.** SessionStart hook berjalan sebelum pengguna mengetik apa pun, jadi relevansi belum bisa dihitung. Yang dikirim hanya peta: jumlah entri per tipe, ADR yang mengikat, lineage, dan entri ber-pin. **Ukurannya tetap ~1,4 KB baik pada 14 entri maupun 2.014 entri.**
 
 **Tahap 2 — entri relevan, setiap prompt.** UserPromptSubmit hook meneruskan stdin-nya ke `POST /relevant`; server mengurai prompt, memeringkat entri dengan BM25 lewat indeks FTS5, dan menyuntikkan hanya yang cocok. Terukur 0,9–1,8 KB per prompt, 138–156 ms pada 2.014 entri.
+
+**Tahap 3 — aktivasi per repo, begitu filenya disentuh.** PostToolUse hook membaca path file dari payload tool (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, dan — lewat pemindaian token perintah — `Bash`), mencari akar worktree git di atas path itu, lalu mengambil orientasi repo tersebut. Repo yang sama hanya ditanyakan **sekali per sesi**; repo yang ternyata belum punya memory ikut dicatat, supaya tidak ditanya ulang pada setiap file. Setelah aktif, repo itu juga ikut ditanyakan pada tahap 2 di prompt-prompt berikutnya, berlabel nama repo agar konvensi repo A tidak diterapkan ke repo B.
+
+Pemicunya menyertakan `Read` dan bukan hanya penyuntingan, karena hanya `PostToolUse` yang punya `additionalContext` — pada `PreToolUse`, stdout hook cuma masuk debug log dan model tidak pernah melihatnya. Membaca file hampir selalu mendahului mengubahnya, jadi memory sudah masuk sebelum perubahan pertama ditulis.
 
 Tiga penjagaan yang membuatnya tidak menjadi beban:
 

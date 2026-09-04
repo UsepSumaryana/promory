@@ -1,5 +1,5 @@
 {
-  "description": "Retrieval memory dua tahap: orientasi di awal sesi, entri relevan tiap prompt",
+  "description": "Retrieval memory tiga tahap: orientasi di awal sesi, entri relevan tiap prompt, dan aktivasi per repo begitu ada filenya yang disentuh",
   "hooks": {
     "SessionStart": [
       {
@@ -20,6 +20,18 @@
             "type": "command",
             "shell": "bash",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt-memory.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/touch-memory.sh\""
           }
         ]
       }

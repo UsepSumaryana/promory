@@ -1,7 +1,7 @@
 {
   "name": "project-memory",
-  "version": "2.2.1",
-  "description": "Memory proyek lintas-sesi per branch, disimpan di luar codebase",
+  "version": "2.3.0",
+  "description": "Memory proyek lintas-sesi per branch, aktif per repo yang disentuh, disimpan di luar codebase",
   "author": {
     "name": "bakhija"
   },

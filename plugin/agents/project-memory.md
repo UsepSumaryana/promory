@@ -26,6 +26,12 @@ Memory disimpan di **server MCP bersama**, dibaca dan ditulis seluruh tim. Kamu 
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/pm-context.sh"
 ```
 
+Kalau cwd bukan repo git (workspace payung berisi banyak repo terpisah), atau kalau sesi menyentuh lebih dari satu repo, berikan direktori worktree repo yang dimaksud sebagai argumen — mengandalkan cwd akan menghasilkan `NOT_A_GIT_REPO` atau repo yang salah:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/pm-context.sh" /path/ke/worktree/repo
+```
+
 Output memberi: `repo_slug`, `repo_slug_source`, `branch`, `parent_branch` (tebakan heuristik), `contained_by`, `merged_in`, `head`, `dirty_files`.
 
 Kalau outputnya `NOT_A_GIT_REPO`, laporkan itu dan berhenti — tanpa branch, tidak ada yang bisa di-scope.

@@ -3,6 +3,14 @@
 # Dipakai oleh agent project-memory. Read-only, tidak pernah menulis ke repo.
 set -u
 
+# Direktori repo boleh diberikan sebagai argumen pertama. Tanpa ini, script
+# hanya bisa melihat cwd - dan sesi yang dimulai di workspace payung (folder
+# berisi banyak repo terpisah) tidak punya repo di cwd sama sekali, sehingga
+# penulisan memory tidak tahu harus mendarat di repo mana.
+if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
+  cd "$1" 2>/dev/null || { echo "DIREKTORI_TIDAK_ADA"; exit 0; }
+fi
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "NOT_A_GIT_REPO"; exit 0; }
 
 # Slug repo diturunkan dari URL remote, BUKAN dari nama direktori — dua orang

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Recall otomatis di awal sesi.
+# session-context.sh - Recall otomatis di awal sesi.
 #
 # Hook ini MENGAMBIL SENDIRI briefing dari server lalu mencetaknya ke stdout;
 # untuk SessionStart, stdout polos masuk ke konteks sesi apa adanya.
@@ -8,74 +8,79 @@
 # Itu tidak bisa diandalkan: sebagian harness Claude Code memasang aturan
 # "jangan panggil Agent tool kecuali diminta pengguna" di level system prompt,
 # yang selalu menang atas instruksi dari hook. Akibatnya recall tidak pernah
-# jalan di sesi seperti itu, dan diam-diam — tidak ada pesan galat apa pun.
+# jalan di sesi seperti itu, dan diam-diam - tanpa pesan galat apa pun.
 # Dengan hook yang mengambil datanya sendiri, recall tidak lagi bergantung pada
 # keputusan model mana pun.
 #
-# Diam total kalau: bukan repo git, PM_MEMORY_* tidak diset, atau server tak
-# terjangkau. Sesi harus tetap jalan tanpa memory, bukan menggantung.
+# Kalau cwd BUKAN repo git, hook tidak lagi berhenti tanpa jejak. Workspace
+# payung yang berisi banyak repo terpisah adalah pola kerja yang sah, dan versi
+# sebelumnya membuat memory tampak mati di sana tanpa satu pun petunjuk kenapa.
+# Sekarang sesi seperti itu diberi catatan singkat, dan memory sungguhannya
+# dimuat oleh touch-memory.sh begitu ada file di dalam repo yang disentuh.
+set -u
 
-command -v curl >/dev/null 2>&1 || exit 0
-git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
-[ -n "${PM_MEMORY_URL:-}" ] || exit 0
-[ -n "${PM_MEMORY_TOKEN:-}" ] || exit 0
+PM_SCRIPTS="$(dirname "$0")/../scripts"
+. "$PM_SCRIPTS/pm-common.sh" 2>/dev/null || exit 0
+pm_ready || exit 0
 
-CTX="$(sh "$(dirname "$0")/../scripts/pm-context.sh" 2>/dev/null)" || exit 0
-field() { echo "$CTX" | sed -n "s/^$1: //p" | head -1; }
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
-REPO="$(field repo_slug)"
-# Identitas stabil lintas clone; server memakainya untuk menyatukan slug yang
-# berbeda pada repo git yang sama.
-ROOTC="$(field repo_root_commit)"
-case "$ROOTC" in *[!0-9a-f]*|"") ROOTC="" ;; esac
-BRANCH="$(field branch)"
-[ -n "$REPO" ] && [ -n "$BRANCH" ] || exit 0
+if [ -z "$ROOT" ]; then
+  # Tanpa repo tidak ada identitas, jadi tidak ada yang bisa ditanyakan ke
+  # server. Catatan ini murni lokal - nol permintaan jaringan.
+  SUB=""
+  for d in ./*/; do
+    [ -d "$d" ] || continue
+    [ -e "$d/.git" ] || continue
+    SUB="$SUB $(basename "$d")"
+  done
+  [ -n "$SUB" ] || exit 0
+  cat <<EOF
+# Memory proyek - belum aktif
 
-# Induk + branch yang di-merge masuk: memory mereka ikut diwarisi saat recall.
-PARENT="$(field parent_branch)"
-[ "$PARENT" = "unknown" ] && PARENT=""
-MERGED="$(echo "$CTX" | sed -n "/^merged_in:/,/^[a-z_]*:/p" \
-  | sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | sort -u | tr '\n' ',' | sed 's/,$//')"
-INHERIT="$(echo "$PARENT,$MERGED" | sed 's/^,//; s/,$//')"
+Direktori kerja sesi ini bukan repo git, jadi belum ada identitas repo untuk
+mengambil memory. Sub-repo yang terlihat di bawahnya:$SUB
 
-# URL bisa ditulis dengan atau tanpa akhiran /mcp; kupas supaya /brief benar.
-BASE="$(echo "$PM_MEMORY_URL" | sed 's#/mcp/*$##; s#/*$##')"
+Memory sebuah repo akan dimuat OTOMATIS begitu kamu membaca atau mengubah file
+di dalamnya - termasuk repo di luar direktori sesi ini. Tidak ada tool yang
+perlu kamu panggil untuk itu.
+EOF
+  exit 0
+fi
 
-esc() { echo "$1" | sed 's/ /%20/g'; }
+pm_load_ctx "$ROOT" || exit 0
+
+# Anggaran byte briefing. Default 4000: cukup untuk beberapa entri penuh tanpa
+# memicu pemotongan harness. Naikkan lewat PM_BRIEF_BUDGET kalau memory sebuah
+# repo sudah banyak dan terlalu banyak entri turun jadi judul saja - server
+# memberi tahu berapa yang tersisa, jadi angkanya bisa disetel berdasarkan itu.
+BUDGET="$(pm_budget "${PM_BRIEF_BUDGET:-}" 4000)"
 
 # -f: curl gagal (exit != 0) pada status 4xx/5xx, bukan mengembalikan badan
 # galatnya sebagai "hasil". Tanpa ini, halaman 404 dari reverse proxy ikut
-# tersuntik ke konteks sesi sebagai kalau-kalau itu memory — pernah terjadi.
-# Anggaran byte briefing. Default 6000: cukup untuk beberapa entri penuh tanpa
-# memicu pemotongan harness. Naikkan lewat PM_BRIEF_BUDGET kalau memory sebuah
-# repo sudah banyak dan terlalu banyak entri turun jadi judul saja — server
-# memberi tahu berapa yang tersisa, jadi angkanya bisa disetel berdasarkan itu.
-BUDGET="${PM_BRIEF_BUDGET:-4000}"
-# Nilai non-numerik dari env akan merusak aritmetika di bawah; jatuhkan ke default.
-case "$BUDGET" in ''|*[!0-9]*) BUDGET=4000 ;; esac
-
+# tersuntik ke konteks sesi seolah-olah itu memory - pernah terjadi.
 BRIEF="$(curl -sf --max-time 6 \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
-  "$BASE/brief?repo=$(esc "$REPO")&branch=$(esc "$BRANCH")&inherit=$(esc "$INHERIT")&budget=$BUDGET&mode=orientation&root=$ROOTC" 2>/dev/null)" || exit 0
+  "$PM_BASE/brief?repo=$(pm_esc "$PM_REPO")&branch=$(pm_esc "$PM_BRANCH")&inherit=$(pm_esc "$PM_INHERIT")&budget=$BUDGET&mode=orientation&root=$PM_ROOTC" 2>/dev/null)" || exit 0
 [ -n "$BRIEF" ] || exit 0
 
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
-case "$BRIEF" in *'<html'*|*'<!DOCTYPE'*|*'<HTML'*) exit 0 ;; esac
+pm_is_html "$BRIEF" && exit 0
 
 # Batas ukuran. Stdout hook yang besar dipotong harness jadi pratinjau beberapa
-# KB pertama, sisanya dibuang ke file yang tidak dibaca model — recall tampak
+# KB pertama, sisanya dibuang ke file yang tidak dibaca model - recall tampak
 # berhasil padahal separuh isinya hilang (pernah terjadi pada 18,9 KB). Server
 # sudah mengirim indeks padat; ini jaring terakhir kalau memory tumbuh banyak.
 # Batasnya mengikuti anggaran plus margin, bukan angka tetap. Versi bernilai
-# tetap 6000 justru memotong briefing saat PM_BRIEF_BUDGET dinaikkan — jaring
+# tetap 6000 justru memotong briefing saat PM_BRIEF_BUDGET dinaikkan - jaring
 # pengaman berubah jadi pengikat, dan knob-nya tidak berfungsi.
 BRIEF="$(printf '%s' "$BRIEF" | head -c "$((BUDGET + 1500))")"
 
 cat <<EOF
-# Memory proyek — \`$REPO\` @ \`$BRANCH\`
+# Memory proyek - \`$PM_REPO\` @ \`$PM_BRANCH\`
 
 Isi di bawah **SUDAH ADA di konteksmu**, dimuat otomatis oleh plugin
-project-memory. Kamu tidak perlu — dan jangan — memanggil tool apa pun untuk
+project-memory. Kamu tidak perlu - dan jangan - memanggil tool apa pun untuk
 mendapatkannya.
 
 Kalau pengguna bertanya apakah kamu memakai project-memory, jawab YA dan sebut
@@ -85,7 +90,10 @@ jadi tidak adanya tool call bukan berarti memory tidak dipakai.
 
 $BRIEF
 
-Penulisan ke memory TIDAK otomatis — kamu yang harus memulainya. Begitu ada hal
+Kalau sesi ini juga menyentuh repo LAIN, memory repo itu akan menyusul otomatis
+begitu ada filenya yang kamu baca atau ubah.
+
+Penulisan ke memory TIDAK otomatis - kamu yang harus memulainya. Begitu ada hal
 yang mahal ditemukan dan tidak jelas dari membaca satu file (alur bispro,
 keputusan desain beserta alternatif yang ditolak, jebakan yang menghabiskan
 waktu, konvensi tim, cara menjalankan atau men-debug sesuatu, keputusan
