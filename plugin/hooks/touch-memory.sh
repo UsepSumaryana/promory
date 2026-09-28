@@ -62,13 +62,31 @@ if [ -z "$TARGET" ] && [ "$TOOL" = "Bash" ]; then
     PM_SEP='|;()&<>='
     PM_DQ='"'
     PM_SQ="'"
-    for tok in $(printf '%s' "$CMD" | tr "$PM_SEP$PM_DQ$PM_SQ" ' '); do
+    # Perintahnya masih ter-escape gaya JSON, dan di-unescape dua langkah yang
+    # urutannya penting: pasangan `\\` - backslash asli, pemisah path Windows -
+    # jadi `/` LEBIH DULU, baru sisa `\"`, `\n`, `\t`, `\r` jadi spasi. Urutan
+    # sebaliknya memotong path Windows yang direktorinya berawalan n, t, atau r:
+    # `D:\\node_modules` akan terbaca `D:\` dan `ode_modules`.
+    #
+    # Globbing dimatikan selama pemindaian: token seperti `src/*.ts` tidak boleh
+    # berkembang menjadi daftar file di cwd hook, yang lalu dicoba satu per satu.
+    set -f
+    TRIES=0
+    for tok in $(printf '%s' "$CMD" | sed -e 's#\\\\#/#g' -e 's#\\[nrt"]# #g' | tr "$PM_SEP$PM_DQ$PM_SQ" ' '); do
       # Hanya token berbentuk path yang layak dicoba: ada pemisah direktori,
-      # atau huruf drive Windows di depan.
-      case "$tok" in */*|?:*) ;; *) continue ;; esac
+      # atau huruf drive Windows di depan. URL dilewati - bentuknya path, tapi
+      # tidak pernah ada di disk, dan penelusuran ke induknya berakhir di cwd.
+      case "$tok" in *://*) continue ;; */*|?:*) ;; *) continue ;; esac
+      # Paling banyak empat percobaan. Tiap token berharga satu `git` plus
+      # beberapa proses - ~200 ms di Windows - dan sejak perintah ber-kutip ikut
+      # terbaca utuh, perintah yang menyebut banyak path di luar repo tidak boleh
+      # menahan setiap tool call selama berdetik-detik.
+      TRIES=$((TRIES + 1))
+      [ "$TRIES" -gt 4 ] && break
       r="$(pm_repo_root "$tok" 2>/dev/null)" || continue
       [ -n "$r" ] && { TARGET="$tok"; break; }
     done
+    set +f
   fi
 fi
 [ -n "$TARGET" ] || exit 0

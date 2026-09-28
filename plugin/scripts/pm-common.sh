@@ -303,6 +303,14 @@ pm_json_escape() {
 # Nilainya masih ter-escape gaya JSON (path Windows datang sebagai `D:\\Works`).
 # Itu tidak perlu di-unescape karena pm_repo_root sudah meringkas rentetan
 # backslash menjadi satu pemisah.
+#
+# Isi string dicocokkan sebagai `([^"\\]|\\.)*` - karakter biasa, atau
+# backslash beserta karakter sesudahnya - bukan `[^"]*`. Versi lama berhenti di
+# kutip ganda ter-escape PERTAMA, jadi perintah Bash `cd "D:/Works/repo" && ...`
+# terbaca `cd \`, dan touch-memory.sh tidak pernah menemukan path di perintah
+# yang meng-quote path-nya - kebanyakan perintah nyata, apalagi di Windows.
+# Terukur sama cepat dengan pola lama pada payload Read 200 KB (~112 ms,
+# hampir seluruhnya biaya proses), dan hasilnya identik untuk nilai tanpa kutip.
 pm_json_field() {
-  printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  printf '%s' "$1" | sed -n -E 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' | head -1
 }
