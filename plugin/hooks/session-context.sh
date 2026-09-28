@@ -17,11 +17,48 @@
 # sebelumnya membuat memory tampak mati di sana tanpa satu pun petunjuk kenapa.
 # Sekarang sesi seperti itu diberi catatan singkat, dan memory sungguhannya
 # dimuat oleh touch-memory.sh begitu ada file di dalam repo yang disentuh.
+#
+# Stdin dibaca untuk dua hal. `session_id`: repo cwd harus tercatat di state
+# sesi yang sama dengan yang diperiksa touch-memory.sh - versi yang tidak
+# membaca stdin tidak pernah mencatatnya, sehingga pembacaan file pertama di
+# repo cwd menyuntikkan briefing yang sama sekali lagi. `source`: hook ini
+# berjalan lagi setelah compaction, dan di situ state "sudah dikirim" harus
+# dibuang.
 set -u
+
+PAYLOAD="$(cat 2>/dev/null)"
 
 PM_SCRIPTS="$(dirname "$0")/../scripts"
 . "$PM_SCRIPTS/pm-common.sh" 2>/dev/null || exit 0
 pm_ready || exit 0
+
+SESSION="$(pm_json_field "$PAYLOAD" session_id)"
+SOURCE="$(pm_json_field "$PAYLOAD" source)"
+SEEN="$(pm_state_file "$SESSION" seen)"
+ACTIVE="$(pm_state_file "$SESSION" active)"
+
+# --- setelah compaction atau /clear -----------------------------------------
+# Memory yang tadinya disuntikkan - briefing repo lain dari touch-memory.sh,
+# entri relevan dari prompt-memory.sh - ikut terringkas dan praktis hilang dari
+# konteks, tapi masih tercatat "sudah dikirim" di dua tempat: file `seen` di
+# mesin ini dan himpunan entri terkirim per sesi di server. Tanpa reset, tidak
+# satu pun dikirim ulang selama sisa sesi - dan yang terkena justru sesi
+# panjang, yang paling banyak membaca kode.
+#
+# `active` DIPERTAHANKAN pada compaction: pekerjaannya masih di repo yang sama,
+# dan prompt berikutnya harus tetap menanyakannya. /clear memulai percakapan
+# baru, jadi keduanya dibuang.
+#
+# Server lama belum punya rute reset; permintaannya gagal tanpa suara dan
+# dedup-nya berperilaku seperti sebelum perbaikan ini.
+case "$SOURCE" in
+  compact|clear)
+    rm -rf "$SEEN" "$SEEN".claim-* 2>/dev/null
+    [ "$SOURCE" = clear ] && rm -f "$ACTIVE" 2>/dev/null
+    curl -sf --max-time 3 -X POST -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
+      "$PM_BASE/session/reset?session=$(pm_esc "$SESSION")" >/dev/null 2>&1 || true
+    ;;
+esac
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
@@ -62,10 +99,16 @@ BUDGET="$(pm_budget "${PM_BRIEF_BUDGET:-}" 4000)"
 BRIEF="$(curl -sf --max-time 6 \
   -H "Authorization: Bearer $PM_MEMORY_TOKEN" \
   "$PM_BASE/brief?repo=$(pm_esc "$PM_REPO")&branch=$(pm_esc "$PM_BRANCH")&inherit=$(pm_esc "$PM_INHERIT")&budget=$BUDGET&mode=orientation&root=$PM_ROOTC" 2>/dev/null)" || exit 0
-[ -n "$BRIEF" ] || exit 0
 
 # Sabuk pengaman kedua: apa pun yang berbau HTML jelas bukan briefing kita.
 pm_is_html "$BRIEF" && exit 0
+
+# Server sudah menjawab untuk repo cwd, jadi repo ini dicatat sebagai sudah
+# ditanyakan - aturannya sama dengan touch-memory.sh: `seen` begitu server
+# menjawab, `active` hanya kalau memang ada memory-nya.
+pm_state_add "$ROOT" "$SEEN"
+[ -n "$BRIEF" ] || exit 0
+pm_state_add "$ROOT" "$ACTIVE"
 
 # Batas ukuran. Stdout hook yang besar dipotong harness jadi pratinjau beberapa
 # KB pertama, sisanya dibuang ke file yang tidak dibaca model - recall tampak

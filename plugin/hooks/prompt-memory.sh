@@ -33,31 +33,10 @@ SESSION="$(pm_json_field "$PAYLOAD" session_id)"
 STATE="$(pm_state_file "$SESSION" active)"
 
 # --- repo mana yang ditanyakan ----------------------------------------------
-# cwd lebih dulu kalau memang repo, lalu repo yang diaktifkan lewat sentuhan
-# file. Dibatasi tiga: sesi yang menyentuh belasan repo tidak boleh mengubah
-# setiap prompt menjadi belasan permintaan.
-#
-# Daftar disusun dengan ekspansi parameter, bukan pipeline `printf | sed | head`.
-# Hook ini berjalan di setiap prompt, dan pada Windows satu proses saja ~70-140
-# ms; versi berpipeline menghabiskan ratusan milidetik hanya untuk menyusun
-# daftar berisi paling banyak tiga baris.
-NL='
-'
-TARGETS=""
-NTARGET=0
-add_target() {
-  [ -n "$1" ] || return 0
-  [ "$NTARGET" -ge 3 ] && return 0
-  case "$NL$TARGETS$NL" in *"$NL$1$NL"*) return 0 ;; esac
-  if [ -z "$TARGETS" ]; then TARGETS="$1"; else TARGETS="$TARGETS$NL$1"; fi
-  NTARGET=$((NTARGET + 1))
-}
-
-add_target "$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -f "$STATE" ]; then
-  while IFS= read -r r; do add_target "$r"; done < "$STATE"
-fi
-[ -n "$TARGETS" ] || exit 0
+# cwd lebih dulu, lalu repo yang diaktifkan lewat sentuhan file, paling banyak
+# tiga - lihat pm_targets di pm-common.sh.
+pm_targets "$STATE"
+[ -n "$PM_TARGETS" ] || exit 0
 
 BUDGET="$(pm_budget "${PM_RELEVANT_BUDGET:-}" 3000)"
 LIMIT=$((BUDGET + 800))
@@ -65,6 +44,9 @@ LIMIT=$((BUDGET + 800))
 # Loop dijalankan lewat heredoc, bukan pipe. Pipe akan menaruh loop di subshell
 # - dan itu sempat menyembunyikan bug: perubahan variabel di dalamnya tidak
 # terlihat dari luar. Heredoc juga tidak membutuhkan proses `printf` tambahan.
+#
+# Satu permintaan per repo, tapi server menghitung pengingat per PROMPT lewat
+# prompt_id di payload - jumlah repo aktif tidak melipatgandakannya.
 while IFS= read -r ROOT; do
   [ -n "$ROOT" ] || continue
   pm_load_ctx "$ROOT" || continue
@@ -81,7 +63,7 @@ while IFS= read -r ROOT; do
   # Kalau lebih dari satu repo ikut, tiap blok wajib diberi label. Tanpa itu
   # entri dua repo berbeda terbaca sebagai satu tumpukan, dan konvensi repo A
   # bisa diterapkan ke repo B.
-  [ "$NTARGET" -gt 1 ] && printf 'Memory `%s` @ `%s`:\n' "$PM_REPO" "$PM_BRANCH"
+  [ "$PM_NTARGET" -gt 1 ] && printf 'Memory `%s` @ `%s`:\n' "$PM_REPO" "$PM_BRANCH"
 
   # `head -c` hanya dipanggil kalau memang kepanjangan; panjang string sendiri
   # sudah diketahui builtin.
@@ -93,5 +75,5 @@ while IFS= read -r ROOT; do
   fi
   printf '\n'
 done <<PM_TARGETS_EOF
-$TARGETS
+$PM_TARGETS
 PM_TARGETS_EOF

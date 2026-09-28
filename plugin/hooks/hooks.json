@@ -1,5 +1,5 @@
 {
-  "description": "Retrieval memory tiga tahap: orientasi di awal sesi, entri relevan tiap prompt, dan aktivasi per repo begitu ada filenya yang disentuh",
+  "description": "Retrieval memory tiga tahap: orientasi di awal sesi, entri relevan tiap prompt, dan aktivasi per repo begitu ada filenya yang disentuh - plus warisan memory agent induk untuk setiap subagent",
   "hooks": {
     "SessionStart": [
       {
@@ -32,6 +32,17 @@
             "type": "command",
             "shell": "bash",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/touch-memory.sh\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-memory.sh\""
           }
         ]
       }

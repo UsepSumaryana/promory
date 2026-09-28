@@ -13,9 +13,47 @@
  * Pemisahan ini menjawab kegagalan versi sebelumnya: briefing yang mengirim
  * SEMUA entri terpaksa dipotong sewenang-wenang secara alfabetis begitu
  * anggaran habis, dan pada ribuan entri hal itu tidak bisa dipertahankan.
+ *
+ * Subagent — `buildSubagentBrief`, dipanggil SubagentStart hook. Subagent tidak
+ * melewati kedua tahap di atas, jadi ia menerima orientasi ditambah entri yang
+ * sudah lolos tahap 2 untuk agent induknya.
  */
 
 import { ageFlags } from './age.mjs';
+
+const clamp = (v, max) => {
+  const flat = String(v ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
+
+/**
+ * Satu entri dalam bentuk yang disuntikkan ke konteks. Dipakai /relevant dan
+ * briefing subagent, supaya entri yang sama terbaca sama di mana pun ia muncul.
+ */
+function entryBlock(e, branch) {
+  // Entri branch didahulukan atas entri bersama pada relevansi setara —
+  // konteks branch saat ini lebih mungkin benar untuk pekerjaan sekarang.
+  const flags = [
+    e.type,
+    e.confidence === 'likely' ? 'belum pasti' : null,
+    e.branch && e.branch !== branch ? `dari branch ${e.branch}` : null,
+    ...ageFlags(e.updated_at),
+  ].filter(Boolean);
+  return (
+    `### ${e.title}\n_${flags.join(', ')}_\n` +
+    `${clamp(e.body, 500)}${e.why ? `\n**Kenapa penting:** ${clamp(e.why, 200)}` : ''}`
+  );
+}
+
+// Kapan pengingat ini ikut ditentukan shouldNudge() di index.mjs.
+const REMINDER =
+  'Sesi ini sudah berjalan beberapa putaran. Kalau di sepanjangnya ada hal yang MAHAL ' +
+  'ditemukan dan tidak jelas dari membaca satu file — alur bispro, keputusan desain beserta ' +
+  'alternatif yang ditolak, jebakan yang menghabiskan waktu, konvensi tim, cara menjalankan ' +
+  'atau men-debug sesuatu, keputusan non-teknikal dari pengguna — simpan sekarang dengan skill ' +
+  '`/project-memory:simpan-memory`. Tulis langsung tanpa menunggu konfirmasi pengguna, lalu ' +
+  'laporkan singkat apa yang disimpan. Jangan menyimpan hal yang gampang di-grep dari kode, ' +
+  'dan jangan menyimpan kredensial.';
 
 const STOPWORDS = new Set(
   // Indonesia + Inggris, kata yang mencocokkan hampir semua entri sehingga
@@ -51,7 +89,7 @@ export function promptToFtsQuery(prompt, { maxTerms = 12 } = {}) {
   return unique.map((t) => `"${t}"*`).join(' OR ');
 }
 
-export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 25 }) {
+export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 25, forSubagent = false }) {
   const counts = db
     .prepare(
       `SELECT type, COUNT(*) AS n FROM entries WHERE repo=? GROUP BY type ORDER BY n DESC`,
@@ -79,11 +117,6 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
   const adrTotal = db.prepare('SELECT COUNT(*) AS n FROM adrs WHERE repo=?').get(repo).n;
   const lineage = db.prepare('SELECT * FROM lineage WHERE repo=? AND branch=?').get(repo, branch);
 
-  const clamp = (v, max) => {
-    const flat = String(v ?? '').replace(/\s+/g, ' ').trim();
-    return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-  };
-
   const out = [];
   if (total) {
     out.push(
@@ -91,8 +124,14 @@ export function buildOrientation(db, { repo, branch, inheritFrom = [], maxAdr = 
         counts.map((c) => `${c.n} ${c.type}`).join(', ') +
         // Pernyataan "sudah ada di konteksmu" cukup sekali, dan tempatnya di
         // pembungkus hook. Mengulanginya di sini hanya menghabiskan konteks.
-        '.\nEntri yang relevan akan disuntikkan otomatis begitu pengguna mengirim permintaan. ' +
-        'Pakai `memory_search` hanya bila butuh menelusuri sendiri.',
+        //
+        // Subagent tidak pernah menerima suntikan per permintaan, jadi janji
+        // itu tidak boleh ikut ke sana.
+        (forSubagent
+          ? '.\nSubagent tidak menerima suntikan per permintaan; pakai `memory_search` bila butuh ' +
+            'entri yang tidak ada di sini.'
+          : '.\nEntri yang relevan akan disuntikkan otomatis begitu pengguna mengirim permintaan. ' +
+            'Pakai `memory_search` hanya bila butuh menelusuri sendiri.'),
     );
   }
 
@@ -142,8 +181,18 @@ export function buildRelevant(
   db,
   { repo, branch, inheritFrom = [], prompt, exclude = new Set(), budget = 3000, limit = 4, nudge = false },
 ) {
+  // Sesi yang promptnya tidak pernah cocok dengan entri mana pun tetap perlu
+  // diingatkan menyimpan — justru sesi seperti itulah yang paling mungkin
+  // menghasilkan temuan baru, karena memory belum menutupi topiknya.
+  //
+  // Karena itu SETIAP jalur keluar tanpa entri membawa pengingatnya. Versi
+  // sebelumnya keluar lebih dulu untuk prompt tanpa kata yang bisa dicari
+  // ("ok", "ya"), padahal hitungan prompt sudah naik: giliran pengingat itu
+  // hilang dan baru datang lagi tiga prompt kemudian.
+  const none = { ids: [], text: nudge ? REMINDER : '' };
+
   const query = promptToFtsQuery(prompt);
-  if (!query) return { ids: [], text: '' };
+  if (!query) return none;
 
   const branches = [branch, ...inheritFrom].filter(Boolean);
   const ph = branches.map(() => '?').join(',') || "''";
@@ -165,13 +214,8 @@ export function buildRelevant(
       .all(query, repo, ...branches, limit * 4);
   } catch {
     // Query FTS yang tetap tidak sah tidak boleh menggagalkan prompt pengguna.
-    return { ids: [], text: '' };
+    return none;
   }
-
-  const clamp = (v, max) => {
-    const flat = String(v ?? '').replace(/\s+/g, ' ').trim();
-    return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-  };
 
   // Query OR mencocokkan entri yang hanya kena satu kata umum, dan tanpa ambang
   // hasilnya penuh kebisingan: permintaan soal `maxIdle` ikut menarik entri
@@ -199,17 +243,7 @@ export function buildRelevant(
   const ids = [];
   let used = 0;
   for (const e of relevant) {
-    // Entri branch didahulukan atas entri bersama pada relevansi setara —
-    // konteks branch saat ini lebih mungkin benar untuk pekerjaan sekarang.
-    const flags = [
-      e.type,
-      e.confidence === 'likely' ? 'belum pasti' : null,
-      e.branch && e.branch !== branch ? `dari branch ${e.branch}` : null,
-      ...ageFlags(e.updated_at),
-    ].filter(Boolean);
-    const block =
-      `### ${e.title}\n_${flags.join(', ')}_\n` +
-      `${clamp(e.body, 500)}${e.why ? `\n**Kenapa penting:** ${clamp(e.why, 200)}` : ''}`;
+    const block = entryBlock(e, branch);
     if (used + block.length > budget) break;
     picked.push(block);
     ids.push(e.id);
@@ -217,20 +251,7 @@ export function buildRelevant(
     if (picked.length >= limit) break;
   }
 
-  const reminder = nudge
-    ? '\n\n---\nSesi ini sudah berjalan beberapa putaran. Kalau di sepanjangnya ada hal yang MAHAL ' +
-      'ditemukan dan tidak jelas dari membaca satu file — alur bispro, keputusan desain beserta ' +
-      'alternatif yang ditolak, jebakan yang menghabiskan waktu, konvensi tim, cara menjalankan ' +
-      'atau men-debug sesuatu, keputusan non-teknikal dari pengguna — simpan sekarang dengan skill ' +
-      '`/project-memory:simpan-memory`. Tulis langsung tanpa menunggu konfirmasi pengguna, lalu ' +
-      'laporkan singkat apa yang disimpan. Jangan menyimpan hal yang gampang di-grep dari kode, ' +
-      'dan jangan menyimpan kredensial.'
-    : '';
-
-  // Sesi yang promptnya tidak pernah cocok dengan entri mana pun tetap perlu
-  // diingatkan menyimpan — justru sesi seperti itulah yang paling mungkin
-  // menghasilkan temuan baru, karena memory belum menutupi topiknya.
-  if (!picked.length) return { ids: [], text: reminder ? reminder.replace(/^\n\n---\n/, '') : '' };
+  if (!picked.length) return none;
 
   const text =
     `# Memory relevan (${picked.length} entri)\n\n` +
@@ -252,7 +273,64 @@ export function buildRelevant(
     'sudah tidak berlaku. Memory ini dibaca seluruh tim, jadi entri salah yang dibiarkan akan ' +
     'menyesatkan orang berikutnya.\n\n' +
     picked.join('\n\n') +
-    reminder;
+    (nudge ? `\n\n---\n${REMINDER}` : '');
 
   return { ids, text };
+}
+
+/**
+ * Briefing untuk subagent, dipanggil SubagentStart hook.
+ *
+ * Subagent tidak pernah melewati SessionStart maupun UserPromptSubmit, dan input
+ * SubagentStart tidak memuat teks tugasnya — jadi relevansi tidak bisa dihitung
+ * ulang. Tebakan terbaik yang tersedia adalah entri yang sudah diterima agent
+ * induk di sesi ini: entri itu lolos pemeringkatan untuk permintaan pengguna
+ * yang sedang dikerjakan, dan tugas subagent hampir selalu potongan dari
+ * permintaan itu.
+ *
+ * `sentIds` datang dalam urutan pengiriman. Yang terbaru didahulukan dan yang
+ * tertua dikorbankan lebih dulu bila anggaran habis; orientasi selalu ikut.
+ * Entri tidak dicatat ke statistik pemakaian di sini: ia sudah terhitung saat
+ * pertama kali lolos /relevant, dan statistik itu mengukur relevansi, bukan
+ * berapa banyak konteks yang menyalinnya.
+ */
+export function buildSubagentBrief(db, { repo, branch, inheritFrom = [], sentIds = [], budget = 4000 }) {
+  const orientation = buildOrientation(db, { repo, branch, inheritFrom, forSubagent: true });
+  if (orientation.empty) return orientation;
+
+  const ids = [...sentIds].reverse();
+  let rows = [];
+  if (ids.length) {
+    const byId = new Map(
+      db
+        .prepare(
+          `SELECT id, title, type, body, why, confidence, branch, updated_at FROM entries
+            WHERE repo=? AND id IN (${ids.map(() => '?').join(',')})`,
+        )
+        .all(repo, ...ids)
+        .map((e) => [e.id, e]),
+    );
+    rows = ids.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  const assemble = (take) =>
+    [
+      orientation.text,
+      take.length
+        ? `## Sudah diterima agent induk di sesi ini (${take.length})\n\n` +
+          take.map((e) => entryBlock(e, branch)).join('\n\n')
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+  // Anggaran ditegakkan dengan merakit lalu mengukur, bukan menaksir — sama
+  // seperti buildBrief di recall.mjs.
+  let take = rows;
+  let text = assemble(take);
+  while (text.length > budget && take.length) {
+    take = take.slice(0, -1);
+    text = assemble(take);
+  }
+  return { empty: false, text };
 }

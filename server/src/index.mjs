@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +10,7 @@ import { openDb, audit, recordRetrievals } from './db.mjs';
 import { authenticate, seedFromEnv } from './auth.mjs';
 import { handleAdminApi } from './admin-api.mjs';
 import { buildRecall, buildBrief } from './recall.mjs';
-import { buildOrientation, buildRelevant, promptToFtsQuery } from './retrieve.mjs';
+import { buildOrientation, buildRelevant, buildSubagentBrief, promptToFtsQuery } from './retrieve.mjs';
 import { resolveRepo } from './identity.mjs';
 import { mergeTargets, promoteMergedBranch } from './promote.mjs';
 
@@ -20,11 +21,14 @@ import { mergeTargets, promoteMergedBranch } from './promote.mjs';
  * menambah data perilaku pengguna yang tidak perlu diarsipkan.
  *
  * Dibatasi supaya server yang hidup berminggu-minggu tidak menumpuk sesi mati.
+ *
+ * Himpunan `sent` juga menjadi warisan untuk subagent: SubagentStart hook
+ * membaca entri yang sudah diterima agent induk dari sini.
  */
 const SESSION_CAP = 500;
 const sessions = new Map();
 function sessionState(key) {
-  const st = sessions.get(key) ?? { sent: new Set(), prompts: 0 };
+  const st = sessions.get(key) ?? { sent: new Set(), prompts: 0, lastPrompt: null };
   sessions.delete(key);
   sessions.set(key, st); // set ulang = pindah ke akhir, jadi LRU
   while (sessions.size > SESSION_CAP) sessions.delete(sessions.keys().next().value);
@@ -430,7 +434,22 @@ const httpServer = createServer(async (req, res) => {
     const budget = Math.max(500, Math.min(12000, Number(url.searchParams.get('budget')) || 3000));
 
     const st = sessionState(sessionKey);
-    st.prompts += 1;
+    // Pengingat dihitung per PROMPT, bukan per permintaan. prompt-memory.sh
+    // mengirim satu permintaan untuk setiap repo yang aktif, sampai tiga, dan
+    // versi yang menaikkan hitungan di setiap permintaan membuat pengingat
+    // muncul di dua dari tiga prompt pada dua repo aktif, dan di SETIAP prompt
+    // pada tiga repo — persis wallpaper yang ingin dihindari shouldNudge().
+    //
+    // prompt_id (Claude Code >= 2.1.196) sama untuk semua permintaan dari satu
+    // prompt. Klien lama tidak mengirimnya, jadi teks prompt jadi gantinya —
+    // di-hash supaya prompt panjang tidak menginap di memori proses. Dua prompt
+    // identik berturut-turut lalu terhitung satu, harga yang wajar.
+    const promptKey = payload.prompt_id ?? createHash('sha1').update(String(payload.prompt)).digest('hex');
+    const firstOfPrompt = promptKey !== st.lastPrompt;
+    if (firstOfPrompt) {
+      st.prompts += 1;
+      st.lastPrompt = promptKey;
+    }
 
     // Rute ini dipanggil pada SETIAP prompt setiap anggota tim, dan hook-nya
     // gagal tanpa suara. Jadi bug apa pun di dalam retrieval tidak boleh
@@ -447,7 +466,9 @@ const httpServer = createServer(async (req, res) => {
         prompt: payload.prompt,
         exclude: st.sent,
         budget,
-        nudge: shouldNudge(st.prompts),
+        // Hanya permintaan pertama dari sebuah prompt yang boleh membawanya,
+        // supaya pengingat tidak tercetak sekali per repo.
+        nudge: firstOfPrompt && shouldNudge(st.prompts),
       });
       ids = r.ids;
       body = r.text;
@@ -462,6 +483,18 @@ const httpServer = createServer(async (req, res) => {
 
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-count': String(ids.length) });
     res.end(body);
+    return;
+  }
+
+  // Dipanggil SessionStart hook setelah compaction atau /clear. Entri yang sudah
+  // disuntikkan ikut terringkas dan praktis hilang dari konteks, tapi masih
+  // tercatat "sudah dikirim" di sini — tanpa reset, tidak satu pun dikirim
+  // ulang selama sisa sesi. Hanya `sent` yang dikosongkan; hitungan prompt
+  // untuk pengingat tetap berjalan, karena sesinya sendiri tidak berakhir.
+  if (url.pathname === '/session/reset' && req.method === 'POST') {
+    sessions.get(`${user.id}:${url.searchParams.get('session') || 'tanpa-sesi'}`)?.sent.clear();
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -490,16 +523,36 @@ const httpServer = createServer(async (req, res) => {
     const mode = url.searchParams.get('mode') ?? 'orientation';
     // orientation (default): peta ringkas, ukurannya tetap kecil berapa pun isi
     //   memory — dipakai SessionStart, karena relevansi belum bisa dihitung.
+    // subagent: orientasi + entri yang sudah diterima agent induk di sesi
+    //   `session` — dipakai SubagentStart hook.
     // budget: briefing lengkap dipotong anggaran, cocok untuk memory kecil.
     // full: tanpa batas, hanya untuk diagnosa manual.
-    const { empty, text: body } =
-      mode === 'full'
-        ? buildRecall(db, { repo, branch, inheritFrom })
-        : mode === 'budget'
-          ? buildBrief(db, { repo, branch, inheritFrom, budget })
-          : buildOrientation(db, { repo, branch, inheritFrom });
-    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(empty) });
-    res.end(body);
+    //
+    // Dibungkus try seperti /relevant: SubagentStart berjalan untuk setiap
+    // subagent setiap anggota tim, dan bug di sini tidak boleh menjatuhkan
+    // proses — handler ini async, jadi galat yang lolos menjadi unhandled
+    // rejection yang mematikan server.
+    let result = { empty: true, text: '' };
+    try {
+      result =
+        mode === 'full'
+          ? buildRecall(db, { repo, branch, inheritFrom })
+          : mode === 'budget'
+            ? buildBrief(db, { repo, branch, inheritFrom, budget })
+            : mode === 'subagent'
+              ? buildSubagentBrief(db, {
+                  repo,
+                  branch,
+                  inheritFrom,
+                  budget,
+                  sentIds: sessions.get(`${user.id}:${url.searchParams.get('session') || 'tanpa-sesi'}`)?.sent ?? [],
+                })
+              : buildOrientation(db, { repo, branch, inheritFrom });
+    } catch (err) {
+      console.error('[brief]', err?.stack ?? err);
+    }
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-pm-empty': String(result.empty) });
+    res.end(result.text);
     return;
   }
 

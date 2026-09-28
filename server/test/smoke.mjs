@@ -266,6 +266,59 @@ const usedRow = usage.rows.find((r) => r.hits > 0);
 check('penyuntikan tercatat sebagai hit', !!usedRow && !!usedRow.last_at, JSON.stringify(usedRow ?? null));
 check('entri yang belum pernah tertarik tetap terdaftar', usage.rows.some((r) => r.hits === 0), `never=${usage.never}`);
 
+/* ---------- pengingat per prompt, reset setelah compaction, briefing subagent ---------- */
+
+const REMINDER = 'Sesi ini sudah berjalan beberapa putaran';
+const relevantAs = (session, prompt, promptId) =>
+  fetch(`${URL_}/relevant?repo=demo-repo&branch=fitur-x&budget=3000`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: session, prompt, prompt_id: promptId }),
+  }).then((r) => r.text());
+
+// prompt-memory.sh mengirim satu permintaan per repo aktif, dengan prompt_id
+// yang sama. Tiga permintaan itu harus terhitung SATU prompt — dulu terhitung
+// tiga, dan pengingat muncul di setiap prompt.
+const nudged = [];
+for (let p = 1; p <= 6; p++) {
+  for (let repo = 1; repo <= 3; repo++) {
+    if ((await relevantAs('smoke-nudge', 'zzqx wqyv', `prompt-${p}`)).includes(REMINDER)) nudged.push(`${p}.${repo}`);
+  }
+}
+check('pengingat sekali per prompt walau tiga repo aktif', nudged.join(',') === '3.1,6.1', nudged.join(',') || '(tidak pernah)');
+
+// Prompt tanpa kata yang bisa dicari tetap membawa pengingat bila gilirannya.
+let shortPrompt = '';
+for (let p = 1; p <= 3; p++) shortPrompt = await relevantAs('smoke-pendek', 'ok', `pendek-${p}`);
+check('pengingat tetap muncul untuk prompt tanpa kata kunci', shortPrompt.includes(REMINDER), shortPrompt.slice(0, 80) || '(kosong)');
+
+// Setelah compaction, SessionStart hook mereset sesi supaya entri yang ikut
+// terringkas boleh disuntikkan lagi.
+const ask = 'ceritakan soal Judul uji dan isinya';
+const firstSend = await relevantAs('smoke-compact', ask, 'c-1');
+const resend = await relevantAs('smoke-compact', ask, 'c-2');
+check('entri tidak diulang dalam satu sesi', firstSend.includes('### Judul uji') && !resend.includes('### Judul uji'), resend.slice(0, 80) || '(kosong)');
+const reset = await fetch(`${URL_}/session/reset?session=smoke-compact`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${TOKEN}` },
+});
+const afterReset = await relevantAs('smoke-compact', ask, 'c-3');
+check('reset sesi membuka pengiriman ulang', reset.ok && afterReset.includes('### Judul uji'), `status ${reset.status}`);
+
+// Subagent mewarisi entri yang sudah diterima agent induknya, plus orientasi.
+const subagentBrief = (session) =>
+  fetch(`${URL_}/brief?repo=demo-repo&branch=fitur-x&mode=subagent&budget=4000&session=${session}`, {
+    headers: { authorization: `Bearer ${TOKEN}` },
+  }).then((r) => r.text());
+const inherited = await subagentBrief('smoke-compact');
+check(
+  'briefing subagent memuat entri yang sudah diterima induk',
+  inherited.includes('### Judul uji') && inherited.includes('Memory tim untuk repo ini') && inherited.includes('Subagent tidak menerima'),
+  inherited.slice(0, 120),
+);
+const fresh = await subagentBrief('sesi-tanpa-riwayat');
+check('briefing subagent tanpa riwayat induk berisi orientasi saja', fresh.includes('Memory tim untuk repo ini') && !fresh.includes('### Judul uji'), fresh.slice(0, 120));
+
 const audit = await (await adminFetch('/api/audit?limit=10')).json();
 check('audit mencatat pembuatan pengguna', audit.some((a) => a.action === 'create-user'), audit.map((a) => a.action).join(','));
 

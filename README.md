@@ -6,6 +6,7 @@ Memory proyek **bersama**, per branch, disimpan di server MCP tim — di luar co
 
 - **Baca otomatis, tanpa dipanggil.** Hook mengambil sendiri memory yang relevan dan menyuntikkannya ke konteks — tidak bergantung pada keputusan model, jadi tetap jalan di harness yang melarang pemanggilan Agent tool.
 - **Mengikuti file, bukan direktori sesi.** Memory sebuah repo aktif begitu ada filenya yang dibaca atau diubah — meski sesi dimulai di workspace payung yang berisi banyak repo, atau di repo yang sama sekali lain. Satu sesi boleh menyentuh beberapa repo; masing-masing dapat memory-nya sendiri, berlabel.
+- **Ikut ke subagent.** Subagent seperti Explore dan general-purpose tidak pernah melewati SessionStart maupun UserPromptSubmit, padahal merekalah yang paling banyak membaca ulang kode. Saat subagent dimulai, hook menyuntikkan orientasi repo plus entri yang sudah diterima agent induknya di sesi itu.
 - **Tulis atas inisiatif agent.** Skill `simpan-memory` menyaring temuan dan menyimpannya langsung tanpa meminta persetujuan, lalu melaporkan. Yang gampang di-grep dibuang; yang mahal ditemukan disimpan.
 - **Menandai memory yang mulai tua.** Tiap entri yang disuntikkan membawa umurnya, dan yang melewati `PM_STALE_DAYS` (default 120) ditandai **PERIKSA ULANG**. Agent diinstruksikan memperbaiki entri yang ternyata bertentangan dengan kode, bukan mendiamkannya.
 - **Mengukur pemakaiannya sendiri.** Setiap penyuntikan dicatat, jadi tab **Pemakaian** di GUI bisa menunjukkan entri mana yang tak pernah tertarik (kandidat hapus) dan mana yang tertarik terus (kandidat pin) — kurasi berbasis angka, bukan dugaan.
@@ -73,7 +74,8 @@ Alternatif yang tidak bergantung pada presedensi `enabledPlugins` antar-scope: c
 | `plugin/hooks/session-context.sh` | SessionStart: mengambil orientasi dari server dan mencetaknya ke konteks |
 | `plugin/hooks/prompt-memory.sh` | UserPromptSubmit: meneruskan prompt ke server, menyuntikkan entri relevan |
 | `plugin/hooks/touch-memory.sh` | PostToolUse: mengaktifkan memory repo tempat file yang baru disentuh berada |
-| `plugin/scripts/pm-common.sh` | Logika bersama ketiga hook — resolusi repo dari path, lineage, state per sesi |
+| `plugin/hooks/subagent-memory.sh` | SubagentStart: orientasi plus entri yang sudah diterima agent induk, untuk setiap subagent |
+| `plugin/scripts/pm-common.sh` | Logika bersama keempat hook — resolusi repo dari path, lineage, daftar repo target, state per sesi |
 | `plugin/skills/simpan-memory/SKILL.md` | Skill penulisan — penyaringan, dedup, ADR, lineage |
 | `plugin/scripts/pm-context.sh` | Deteksi repo, branch, lineage — read-only, tidak pernah menulis ke repo |
 | `plugin/agents/project-memory.md` | Agent opsional, untuk pekerjaan memory berat yang diminta pengguna sendiri |
@@ -111,14 +113,20 @@ Entri berpindah, ADR dinomori ulang di tujuan, dan judul yang bentrok **dilewati
 
 **Tahap 2 — entri relevan, setiap prompt.** UserPromptSubmit hook meneruskan stdin-nya ke `POST /relevant`; server mengurai prompt, memeringkat entri dengan BM25 lewat indeks FTS5, dan menyuntikkan hanya yang cocok. Terukur 0,9–1,8 KB per prompt, 138–156 ms pada 2.014 entri.
 
-**Tahap 3 — aktivasi per repo, begitu filenya disentuh.** PostToolUse hook membaca path file dari payload tool (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, dan — lewat pemindaian token perintah — `Bash`), mencari akar worktree git di atas path itu, lalu mengambil orientasi repo tersebut. Repo yang sama hanya ditanyakan **sekali per sesi**; repo yang ternyata belum punya memory ikut dicatat, supaya tidak ditanya ulang pada setiap file. Setelah aktif, repo itu juga ikut ditanyakan pada tahap 2 di prompt-prompt berikutnya, berlabel nama repo agar konvensi repo A tidak diterapkan ke repo B.
+**Tahap 3 — aktivasi per repo, begitu filenya disentuh.** PostToolUse hook membaca path file dari payload tool (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, dan — lewat pemindaian token perintah — `Bash`), mencari akar worktree git di atas path itu, lalu mengambil orientasi repo tersebut. Repo yang sama hanya ditanyakan **sekali per konteks** — agent induk, atau satu subagent; repo yang ternyata belum punya memory ikut dicatat, supaya tidak ditanya ulang pada setiap file. Repo cwd sudah dicatat oleh SessionStart, jadi pembacaan file pertamanya tidak mengulang briefing yang sama. Setelah aktif, repo itu juga ikut ditanyakan pada tahap 2 di prompt-prompt berikutnya, berlabel nama repo agar konvensi repo A tidak diterapkan ke repo B.
 
-Pemicunya menyertakan `Read` dan bukan hanya penyuntingan, karena hanya `PostToolUse` yang punya `additionalContext` — pada `PreToolUse`, stdout hook cuma masuk debug log dan model tidak pernah melihatnya. Membaca file hampir selalu mendahului mengubahnya, jadi memory sudah masuk sebelum perubahan pertama ditulis.
+"Sekali" ditegakkan dengan klaim atomik (`mkdir`), bukan sekadar memeriksa daftar. Claude sering membaca beberapa file sekaligus, dan hook-nya berjalan bersamaan: dengan pemeriksaan biasa, semuanya lolos sebelum ada yang sempat mencatat, lalu briefing yang sama tersuntik sekali per file — terlihat empat kali berturut-turut pada empat `Read` paralel.
+
+Pemicunya menyertakan `Read` dan bukan hanya penyuntingan. `PreToolUse` kini juga menerima `additionalContext`, tapi Claude Code menaruhnya di titik yang sama dengan `PostToolUse` — di samping hasil tool — jadi tidak ada yang lebih awal yang bisa didapat; stdout polos `PreToolUse` tetap hanya masuk debug log. Membaca file hampir selalu mendahului mengubahnya, jadi memory sudah masuk sebelum perubahan pertama ditulis.
+
+**Subagent.** Subagent tidak melewati tahap 1 maupun tahap 2: SessionStart hanya berjalan untuk sesi, dan tugas yang ditulis agent induk bukan prompt pengguna. SubagentStart hook mengisi celah itu dengan orientasi repo plus entri yang sudah diterima agent induk di sesi itu — input SubagentStart tidak memuat teks tugas subagent, jadi relevansi tidak bisa dihitung ulang, dan warisan induk adalah tebakan terbaik yang tersedia. Totalnya dijaga di bawah 8.000 karakter (`PM_SUBAGENT_BUDGET`, default 6.000), karena Claude Code memotong konteks hook di atas 10.000 karakter menjadi pratinjau. Subagent diminta melaporkan temuannya ke agent induk, bukan menulis sendiri.
+
+**Setelah compaction.** Entri yang sudah disuntikkan ikut terringkas dan praktis hilang dari konteks, tapi tetap tercatat "sudah dikirim". SessionStart berjalan lagi dengan `source: "compact"`, dan saat itu hook membuang catatan `seen` lokal serta memanggil `POST /session/reset` supaya server membuka pengiriman ulang. Daftar repo aktif dipertahankan; `/clear` membuang keduanya.
 
 Tiga penjagaan yang membuatnya tidak menjadi beban:
 
 - **Ambang relevansi.** Query OR mencocokkan entri yang hanya kena satu kata umum. Tanpa ambang, pertanyaan soal `maxIdle` ikut menarik entri tentang alur order hanya karena kata "koneksi". Entri dipertahankan hanya bila skor BM25-nya masih dalam rasio 0,55 dari yang terbaik.
-- **Tidak mengulang.** Server melacak entri yang sudah disuntikkan per sesi. Tanpa ini, hook yang berjalan di setiap pesan akan mengirim ulang hal yang sama dan biayanya melebihi mengirim semuanya sekali.
+- **Tidak mengulang.** Server melacak entri yang sudah disuntikkan per sesi. Tanpa ini, hook yang berjalan di setiap pesan akan mengirim ulang hal yang sama dan biayanya melebihi mengirim semuanya sekali. Pelacakan itu direset setelah compaction — lihat di atas.
 - **Diam saat tidak relevan.** Sapaan seperti "ok lanjut ya" menghasilkan nol byte.
 
 **Pin.** Karena orientasi tidak memuat seluruh entri, `pinned` adalah cara menjamin sebuah fakta selalu ikut di awal sesi. Setel lewat tombol Pin di GUI.
@@ -132,7 +140,7 @@ Penulisan **tidak dipaksa**. Tidak ada hook `Stop` yang memblokir penyelesaian s
 Konsekuensinya dorongan harus cukup kuat untuk tidak terlewat:
 
 - **SessionStart** menutup briefing dengan pernyataan tegas bahwa penulisan tidak otomatis dan temuan yang tidak disimpan akan hilang.
-- **UserPromptSubmit** menyisipkan pengingat mulai prompt ke-3, lalu setiap 3 prompt. Bukan di setiap pesan: pengingat yang selalu ada berubah jadi wallpaper yang diabaikan model, sekaligus biaya token yang terbuang. Pengingat tetap muncul walau tidak ada entri relevan — justru sesi seperti itu yang paling mungkin menghasilkan temuan baru.
+- **UserPromptSubmit** menyisipkan pengingat mulai prompt ke-3, lalu setiap 3 prompt. Bukan di setiap pesan: pengingat yang selalu ada berubah jadi wallpaper yang diabaikan model, sekaligus biaya token yang terbuang. Pengingat tetap muncul walau tidak ada entri relevan — justru sesi seperti itu yang paling mungkin menghasilkan temuan baru. Hitungannya per prompt (`prompt_id`), bukan per permintaan: hook mengirim satu permintaan untuk setiap repo aktif, dan versi yang menghitung permintaan memunculkan pengingat di setiap prompt begitu tiga repo aktif.
 - Skill `simpan-memory` **menulis langsung tanpa meminta persetujuan**, lalu melaporkan apa yang disimpan. Bertanya lebih dulu membuat temuan hilang di sesi tanpa pengawasan, dan kesalahan lebih murah diperbaiki lewat GUI kurasi daripada tidak pernah tercatat.
 
 Kalau nanti terbukti masih terlalu sering terlewat, langkah berikutnya adalah hook `Stop` yang menolak penyelesaian sekali per sesi pada sesi substantif — lebih andal, tapi perlu penjaga anti-loop dan ambang supaya sesi remeh tidak diganggu.
